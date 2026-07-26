@@ -55,7 +55,6 @@ app.use((err, req, res, next) => {
 const supabaseConfigured = process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY;
 console.log("[Config] env vars loaded:", {
   FIREBASE_SERVICE_ACCOUNT: process.env.FIREBASE_SERVICE_ACCOUNT ? "set" : "MISSING",
-  GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS ? "set" : "MISSING",
   SUPABASE_URL: process.env.SUPABASE_URL ? "set" : "MISSING",
   SUPABASE_SECRET_KEY: process.env.SUPABASE_SECRET_KEY ? "set" : "MISSING",
   JWT_SECRET: process.env.JWT_SECRET ? "set" : "MISSING",
@@ -69,10 +68,7 @@ if (firebaseStatus.initialized) {
 } else {
   console.error("[Config] Firebase Admin: ❌ NOT CONFIGURED");
   console.error("[Config]   Reason:", firebaseStatus.error || "unknown");
-  console.error("[Config]   To fix, either:");
-  console.error("[Config]   Option A: Place service account JSON at backend/config/firebase-service-account.json");
-  console.error("[Config]   Option B: Set FIREBASE_SERVICE_ACCOUNT=<JSON> in backend/.env");
-  console.error("[Config]   Option C: Set GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json in backend/.env");
+  console.error("[Config]   To fix, set FIREBASE_SERVICE_ACCOUNT=<JSON> in backend/.env");
 }
 
 seedAdmin();

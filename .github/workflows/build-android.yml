@@ -52,19 +52,22 @@ jobs:
         run: cd android && ./gradlew assembleDebug
 
       - name: Generate release keystore
+        env:
+          STORE_PASS: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
           keytool -genkeypair -v \
             -keystore android/app/mtclub-release.keystore \
             -alias mtclub \
             -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass mtclub123 -keypass mtclub123 \
+            -storepass "$STORE_PASS" -keypass "$KEY_PASS" \
             -dname "CN=MT Club, OU=Dev, O=MT Club, L=Borg El-Arab, ST=Alex, C=EG"
 
       - name: Build release AAB
         env:
-          RELEASE_STORE_PASSWORD: mtclub123
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_ALIAS: mtclub
-          RELEASE_KEY_PASSWORD: mtclub123
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: cd android && ./gradlew bundleRelease
 
       - name: Upload debug APK

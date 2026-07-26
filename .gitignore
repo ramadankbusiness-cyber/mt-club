@@ -28,8 +28,11 @@ dist-ssr
 
 .vercel
 
-# Firebase service account (NEVER commit)
+# Firebase service account keys (NEVER commit)
 backend/config/firebase-service-account.json
+backend/config/*-firebase-adminsdk-*.json
+backend/config/*service-account*.json
+*.firebase-adminsdk-*.json
 
 # Android google-services.json is NOT a secret — safe to commit
 !android/app/google-services.json

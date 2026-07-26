@@ -1,6 +1,6 @@
 import { useContext } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Home, Calendar, ScanLine, Users, User, ShieldCheck } from "lucide-react";
+import { Home, Calendar, ScanLine, Users, User, Settings } from "lucide-react";
 import { AuthContext } from "../context/AuthContext";
 
 const tabs = [
@@ -11,7 +11,7 @@ const tabs = [
   { label: "Profile", icon: User, path: "/profile" },
 ];
 
-const adminTab = { label: "Admin", icon: ShieldCheck, path: "/admin" };
+const adminTab = { label: "Admin", icon: Settings, path: "/admin" };
 
 export default function BottomNav() {
   const { user } = useContext(AuthContext);
