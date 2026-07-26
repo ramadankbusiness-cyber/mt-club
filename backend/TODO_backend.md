@@ -1,0 +1,1 @@
+[x] 1. Install dotenv&#10;[x] 2. Created .env (update password if needed)&#10;[x] 3. Created & ran schema.sql&#10;[x] 4. Updated server.js (all routes, error handling, health)&#10;[x] 5. Updated db.js (dotenv, validation)&#10;[x] 6. Updated auth.js (users table, better error handling)&#10;[x] 7. Updated logs.js (DB persistent)&#10;[ ] 8. Test: cd backend &amp;&amp; npm run dev

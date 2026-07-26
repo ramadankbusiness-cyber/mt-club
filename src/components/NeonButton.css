@@ -1,0 +1,26 @@
+/* زرار Neon متناسق مع ألوان MT CLUB */
+#bottone1 {
+  padding: 16px 33px;
+  border-radius: 50px;
+  background: #fff; /* لون أساسي Turquoise */
+  border: none;
+  font-family: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition: 0.4s;
+  color: #000000;
+  font-weight: 600;
+  box-shadow: 0 0 10px #fff;
+}
+
+#bottone1:hover {
+    color: #fff;
+    background: #025749;
+  box-shadow: 0 0 20px #00c197, 0 0 40px #025749, 0 0 60px #00c197;
+}
+
+#bottone1:active {
+
+  transform: scale(0.97);
+  box-shadow: 0 0 30px #00c197, 0 0 50px #025749, 0 0 70px #00c197;
+}

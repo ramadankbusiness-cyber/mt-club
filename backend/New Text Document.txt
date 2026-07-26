@@ -1,0 +1,7 @@
+INSERT INTO users (name, email, password, role)
+VALUES (
+  'Ramadan',
+  'ramadan.k.business@gmail.com',
+  '123456',
+  'admin'
+);

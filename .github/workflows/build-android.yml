@@ -1,0 +1,91 @@
+name: Build Android
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Add Android platform
+        run: npx cap add android || true
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Decode google-services.json (if secret exists)
+        if: env.GPLAY_B64 != ''
+        env:
+          GPLAY_B64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: echo "$GPLAY_B64" | base64 -d > android/app/google-services.json
+
+      - name: Build debug APK
+        run: cd android && ./gradlew assembleDebug
+
+      - name: Generate release keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore android/app/mtclub-release.keystore \
+            -alias mtclub \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass mtclub123 -keypass mtclub123 \
+            -dname "CN=MT Club, OU=Dev, O=MT Club, L=Borg El-Arab, ST=Alex, C=EG"
+
+      - name: Build release AAB
+        env:
+          RELEASE_STORE_PASSWORD: mtclub123
+          RELEASE_KEY_ALIAS: mtclub
+          RELEASE_KEY_PASSWORD: mtclub123
+        run: cd android && ./gradlew bundleRelease
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MT-Club-debug.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload release AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: MT-Club-release.aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-v${{ github.run_number }}
+          name: Android Build ${{ github.run_number }}
+          files: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/bundle/release/app-release.aab
+          generate_release_notes: true

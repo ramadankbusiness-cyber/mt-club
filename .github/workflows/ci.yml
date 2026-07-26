@@ -1,0 +1,171 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run test:frontend -- --run --reporter=verbose
+      - run: npm run test:frontend:coverage -- --run
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-coverage
+          path: coverage/
+          retention-days: 7
+
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    env:
+      JWT_SECRET: test-secret-ci-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: cd backend && npm ci
+      - run: npm run test:backend -- --run --reporter=verbose
+      - run: npm run test:backend:coverage -- --run
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-coverage
+          path: backend/coverage/
+          retention-days: 7
+
+  build:
+    name: Production Build
+    runs-on: ubuntu-latest
+    needs: [lint, frontend-tests, backend-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high || true
+      - run: cd backend && npm ci && npm audit --audit-level=high || true
+
+  android-build:
+    name: Android Build
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci
+      - run: cd backend && npm ci
+      - run: npm run build
+      - run: npx cap sync android
+      - name: Build Android APK
+        working-directory: android
+        run: ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.event_name == 'push'
+    env:
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      PORT: 5001
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: cd backend && npm ci
+      - run: npm run build
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Start backend server
+        run: cd backend && node server.js &
+      - name: Wait for backend
+        run: |
+          for i in $(seq 1 30); do
+            curl -s http://localhost:5001/api/events/ > /dev/null 2>&1 && break
+            sleep 1
+          done
+      - name: Run E2E tests
+        run: npx playwright test --reporter=list
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: tests/e2e/report/
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-traces
+          path: test-results/
+          retention-days: 7

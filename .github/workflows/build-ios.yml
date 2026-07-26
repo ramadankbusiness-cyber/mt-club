@@ -1,0 +1,59 @@
+name: Build iOS
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Add iOS platform
+        run: npx cap add ios || true
+
+      - name: Sync Capacitor
+        run: npx cap sync ios
+
+      - name: Build iOS (unsigned)
+        run: |
+          cd ios/App
+          xcodebuild -project App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_BITCODE=NO
+
+      - name: Package IPA
+        run: |
+          mkdir -p output
+          cd ios/App/build/Build/Products/Debug-iphoneos
+          zip -r ../../../../../../output/MT-Club.ipa Payload/
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MT-Club.ipa
+          path: output/MT-Club.ipa
