@@ -39,24 +39,35 @@ router.post("/register", async (req, res) => {
 router.post("/login", async (req, res) => {
   const email = (req.body.email || "").trim().toLowerCase().slice(0, 255);
   const password = req.body.password || "";
-  if (!email || !password) return res.status(400).json({ message: "Email and password required" });
+  console.log("[LOGIN] Attempt — email:", email, "| password length:", password.length);
+  if (!email || !password) {
+    console.warn("[LOGIN] 400 — missing email or password");
+    return res.status(400).json({ message: "Email and password required" });
+  }
   try {
     const { data: users, error } = await supabase.from("members").select("*").ilike("email", email);
     if (error) {
+      console.error("[LOGIN] 500 — Supabase query error:", error.message);
       return res.status(500).json({ message: "Login failed" });
     }
     if (users.length === 0) {
+      console.warn("[LOGIN] 401 — no user found for email:", email);
       return res.status(401).json({ message: "Invalid credentials" });
     }
     const user = users[0];
+    console.log("[LOGIN] User found — id:", user.id, "| name:", user.name, "| enabled:", user.enabled, "| role:", user.role);
     if (user.enabled === 0 || user.enabled === false) {
-      return res.status(403).json({ message: "Your account has been disabled. Contact an admin." });
+      console.warn("[LOGIN] 401 — account disabled for user:", user.id, "| email:", email);
+      return res.status(401).json({ message: "Invalid credentials" });
     }
     const match = await bcrypt.compare(password, user.password);
+    console.log("[LOGIN] Password match:", match);
     if (!match) {
+      console.warn("[LOGIN] 401 — wrong password for user:", user.id, "| email:", email);
       return res.status(401).json({ message: "Invalid credentials" });
     }
     const token = jwt.sign({ id: user.id, role: user.role, committee: user.committee || null }, JWT_SECRET, { expiresIn: "7d" });
+    console.log("[LOGIN] 200 — success for user:", user.id, "| email:", email);
     let points = 0;
     let attendanceCount = 0;
     try {
@@ -77,6 +88,7 @@ router.post("/login", async (req, res) => {
       token,
     });
   } catch (err) {
+    console.error("[LOGIN] 500 — unexpected error:", err.message, err.stack);
     res.status(500).json({ message: "Login failed" });
   }
 });

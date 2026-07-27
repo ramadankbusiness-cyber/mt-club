@@ -160,8 +160,8 @@ describe("Auth Routes", () => {
       const res = await request(app)
         .post("/api/auth/login")
         .send({ email: "d@t.com", password: "pass" });
-      expect(res.status).toBe(403);
-      expect(res.body.message).toMatch(/disabled/i);
+      expect(res.status).toBe(401);
+      expect(res.body.message).toMatch(/invalid/i);
     });
 
     it("rejects missing email or password", async () => {

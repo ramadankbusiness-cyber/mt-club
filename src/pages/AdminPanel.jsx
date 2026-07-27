@@ -1406,6 +1406,7 @@ export default function AdminPanel() {
     const [deepLink, setDeepLink] = useState("");
     const [image, setImage] = useState("");
     const [largeIcon, setLargeIcon] = useState("");
+    const [buttons, setButtons] = useState("");
     const [schedule, setSchedule] = useState("");
     const [sending, setSending] = useState(false);
     const [sendResult, setSendResult] = useState(null);
@@ -1454,6 +1455,9 @@ export default function AdminPanel() {
       setSending(true);
       setSendResult(null);
       try {
+        const parsedButtons = buttons.trim()
+          ? buttons.split(",").map((b) => ({ text: b.trim() })).filter((b) => b.text)
+          : undefined;
         const payload = {
           title: title.trim(),
           body: body.trim(),
@@ -1465,6 +1469,7 @@ export default function AdminPanel() {
           deepLink: deepLink.trim() || undefined,
           image: image.trim() || undefined,
           largeIcon: largeIcon.trim() || undefined,
+          buttons: parsedButtons,
           schedule: schedule || undefined,
         };
         const res = await axios.post("/api/notifications/send", payload, {
@@ -1488,7 +1493,7 @@ export default function AdminPanel() {
     const handleReset = () => {
       setTitle(""); setBody(""); setSubtitle(""); setTarget("all");
       setTargetValue(""); setImportance("default"); setChannel("general");
-      setDeepLink(""); setImage(""); setLargeIcon(""); setSchedule("");
+      setDeepLink(""); setImage(""); setLargeIcon(""); setButtons(""); setSchedule("");
       setSendResult(null); setShowPreview(false);
     };
 
@@ -1627,6 +1632,8 @@ export default function AdminPanel() {
                 <input type="text" placeholder="Image URL (optional)" value={image} onChange={(e) => setImage(e.target.value)}
                   className={inputClass} />
                 <input type="text" placeholder="Large Icon URL (optional)" value={largeIcon} onChange={(e) => setLargeIcon(e.target.value)}
+                  className={inputClass} />
+                <input type="text" placeholder="Buttons (comma separated: View, Open)" value={buttons} onChange={(e) => setButtons(e.target.value)}
                   className={inputClass} />
                 <input type="datetime-local" value={schedule} onChange={(e) => setSchedule(e.target.value)}
                   className={`${inputClass} [color-scheme:dark]`} />

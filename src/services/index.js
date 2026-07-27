@@ -9,4 +9,4 @@ export { StatusBarService } from "./native/statusbar";
 export { SplashScreenService } from "./native/splashscreen";
 export { KeyboardService } from "./native/keyboard";
 export { AppService } from "./native/app";
-export { NotificationService, registerTokenWithBackend } from "./native/pushnotifications";
+export { OneSignalService } from "./onesignal";

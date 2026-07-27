@@ -1,7 +1,7 @@
 import express from "express";
 import { supabase } from "../config/supabase.js";
 import { requireAdmin } from "../middleware/role.js";
-import { sendPushToAll } from "../utils/pushSender.js";
+import { sendToAll } from "../utils/onesignal.js";
 
 const router = express.Router();
 
@@ -25,11 +25,11 @@ router.post("/", requireAdmin, async (req, res) => {
       .insert({ title, platform: sanitizedPlatform, date: date || null, likes: likes || 0, shares: shares || 0 })
       .select()
       .single();
-    sendPushToAll({
+    sendToAll({
       title: "New Post",
       body: `New ${sanitizedPlatform} post: "${title}"`,
-      importance: "default",
-      channel: "general",
+      priority: "default",
+      deepLink: "/",
       data: { screen: "home" },
     }, req.user?.id).catch((err) => console.error("[Posts] Auto-push failed:", err.message));
     res.json(data);

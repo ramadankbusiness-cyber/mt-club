@@ -1,5 +1,6 @@
 import { createContext, useState, useEffect, useCallback } from "react";
 import axios from "../utils/axios";
+import { OneSignalService } from "../services/onesignal";
 
 export const AuthContext = createContext();
 
@@ -41,6 +42,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = () => {
+    OneSignalService.logoutUser().catch(() => {});
     localStorage.removeItem("user");
     setUser(null);
   };

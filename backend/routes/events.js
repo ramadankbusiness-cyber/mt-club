@@ -3,7 +3,7 @@ import { supabase } from "../config/supabase.js";
 import { requireAdmin } from "../middleware/role.js";
 import path from "path";
 import { createMulter, saveUpload, getPublicUrl } from "../utils/storage.js";
-import { sendPushToAll } from "../utils/pushSender.js";
+import { sendToAll } from "../utils/onesignal.js";
 
 const router = express.Router();
 
@@ -63,11 +63,11 @@ router.post("/", requireAdmin, (req, res) => {
       if (insertErr) {
         return res.status(500).json({ message: "Failed to save event" });
       }
-      sendPushToAll({
+      sendToAll({
         title: "New Event",
         body: `A new event "${sanitizedTitle}" has been created`,
-        importance: "high",
-        channel: "events",
+        priority: "high",
+        deepLink: `/events/${data.id}`,
         data: { screen: "events", id: String(data.id) },
       }, req.user?.id).catch((err) => console.error("[Events] Auto-push failed:", err.message));
       res.json({ id: data.id, image: imageUrl });
