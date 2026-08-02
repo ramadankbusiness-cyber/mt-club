@@ -1,83 +1,84 @@
-import { useEffect, useRef, useCallback } from "react";
-import { OneSignalService } from "../services/onesignal";
-
-const RETRY_DELAYS = [2000, 5000, 15000];
+import { useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
+import * as NotifManager from "../utils/notificationPermissionManager";
 
 export function useNotifications(user) {
-  const initedRef = useRef(false);
-  const timersRef = useRef([]);
-  const loggedInRef = useRef(false);
+  const setupSubRef = useRef(null);
+  const unsubRef = useRef(null);
+  const navigate = useNavigate();
 
-  const cleanup = useCallback(() => {
-    timersRef.current.forEach(clearTimeout);
-    timersRef.current = [];
+  useEffect(() => {
+    function onAutoLogout() {
+      setupSubRef.current = null;
+      unsubRef.current = null;
+    }
+    window.addEventListener("auth:logout", onAutoLogout);
+    return () => window.removeEventListener("auth:logout", onAutoLogout);
   }, []);
 
   useEffect(() => {
-    if (!user?.id || !user?.token) {
-      console.log("[OneSignal Hook] No user — skipping");
-      initedRef.current = false;
-      loggedInRef.current = false;
+    const googleSub = user?.googleSub;
+    if (!googleSub || !user?.token) {
+      if (setupSubRef.current) {
+        console.log("[ONESIGNAL] User lost googleSub or token — stopping sync");
+      }
+      setupSubRef.current = null;
+      NotifManager.stopSubscriptionSync();
       return;
     }
 
-    if (initedRef.current && loggedInRef.current) {
-      console.log("[OneSignal Hook] Already initialized and logged in — skipping");
-      return;
-    }
+    if (setupSubRef.current === googleSub) return;
+    setupSubRef.current = googleSub;
 
-    cleanup();
+    let cancelled = false;
 
-    async function setup(attempt) {
-      try {
-        if (!initedRef.current) {
-          const ok = await OneSignalService.init();
-          if (!ok) {
-            console.warn("[OneSignal Hook] Init failed, attempt", attempt);
-            scheduleRetry(attempt);
-            return;
+    async function setup() {
+      const permission = NotifManager.getPermissionStatus();
+      if (permission !== "granted") {
+        console.log("[ONESIGNAL] Permission not granted (" + permission + ") — skipping identity setup");
+        return;
+      }
+
+      console.log("[ONESIGNAL] Starting identity setup for googleSub:", googleSub.substring(0, 12) + "...");
+
+      const initOk = await NotifManager.initOneSignalSafe();
+      if (cancelled || !initOk) return;
+
+      await NotifManager.ensureExternalId(googleSub);
+      if (cancelled) return;
+
+      await NotifManager.verifyAndRecover(googleSub, user.token);
+      if (cancelled) return;
+
+      NotifManager.startSubscriptionSync(googleSub);
+
+      unsubRef.current = NotifManager.onNotificationClicked((event) => {
+        try {
+          const data = event?.notification?.data;
+          const url = data?.deepLink || data?.screen || data?.url;
+          if (url) {
+            console.log("[PUSH] Notification clicked — navigating to:", url);
+            if (url.startsWith("http")) {
+              window.location.href = url;
+            } else {
+              navigate(url.startsWith("/") ? url : `/${url}`);
+            }
           }
-          initedRef.current = true;
-        }
+        } catch {}
+      });
 
-        if (!loggedInRef.current) {
-          const granted = await OneSignalService.requestPermission();
-          console.log("[OneSignal Hook] Permission:", granted ? "granted" : "denied");
-
-          await OneSignalService.loginUser(user.id, user.token);
-          loggedInRef.current = true;
-          console.log("[OneSignal Hook] Setup complete for user", user.id);
-        }
-      } catch (err) {
-        console.error("[OneSignal Hook] Setup error:", err.message);
-        scheduleRetry(attempt);
-      }
+      console.log("[ONESIGNAL] Identity setup complete | External ID:", NotifManager.getExternalId(), "| Sub:", NotifManager.getExistingSubscriptionId());
     }
 
-    function scheduleRetry(attempt) {
-      if (attempt < RETRY_DELAYS.length) {
-        const delay = RETRY_DELAYS[attempt];
-        console.log("[OneSignal Hook] Retry", attempt + 1, "in", delay / 1000, "s");
-        const t = setTimeout(() => setup(attempt + 1), delay);
-        timersRef.current.push(t);
-      } else {
-        console.warn("[OneSignal Hook] All retries exhausted");
-      }
-    }
-
-    setup(0);
-
-    const unsub = OneSignalService.onNotificationClicked((event) => {
-      const data = event.notification?.data || {};
-      const url = data.deepLink || data.screen || data.url || "/";
-      if (url && window.location) {
-        window.location.href = url;
-      }
-    });
+    setup();
 
     return () => {
-      cleanup();
-      unsub();
+      cancelled = true;
+      if (unsubRef.current) {
+        unsubRef.current();
+        unsubRef.current = null;
+      }
+      NotifManager.stopSubscriptionSync();
     };
-  }, [user?.id, user?.token, cleanup]);
+  }, [user?.googleSub, user?.token, navigate]);
 }

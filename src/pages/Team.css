@@ -22,11 +22,14 @@
   display: flex;
   gap: 1.5rem;
   width: max-content;
-  animation: marquee 100s linear infinite;
+  will-change: transform;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-.marquee-track:hover {
-  animation-play-state: paused;
+.marquee-track:active {
+  cursor: grabbing;
 }
 
 .card {
@@ -96,7 +99,4 @@
   user-select: none;
 }
 
-@keyframes marquee {
-  from { transform: translateX(0); }
-  to { transform: translateX(-50%); }
-}
+

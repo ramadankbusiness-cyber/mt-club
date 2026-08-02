@@ -9,4 +9,8 @@ export { StatusBarService } from "./native/statusbar";
 export { SplashScreenService } from "./native/splashscreen";
 export { KeyboardService } from "./native/keyboard";
 export { AppService } from "./native/app";
-export { OneSignalService } from "./onesignal";
+export {
+  initOneSignalSafe as OneSignalInit,
+  logoutUser as OneSignalLogout,
+  getDiagnostics as OneSignalDiagnostics,
+} from "../utils/notificationPermissionManager";

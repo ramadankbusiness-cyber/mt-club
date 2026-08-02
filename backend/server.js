@@ -19,10 +19,20 @@ import { seedAdmin, seedTeam } from "./seed.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 
+const isDev = process.env.NODE_ENV !== "production";
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
-const corsOptions = ALLOWED_ORIGINS.length > 0
-  ? { origin: (origin, cb) => { if (!origin || ALLOWED_ORIGINS.includes(origin)) cb(null, true); else cb(new Error("Not allowed by CORS")); }, credentials: true, methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization"] }
-  : { origin: true, credentials: true, methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization"] };
+
+const corsOptions = {
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.length > 0 && ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    if (isDev && /^https?:\/\/localhost(:\d+)?$/.test(origin)) return cb(null, true);
+    cb(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
 
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "5mb" }));
@@ -47,24 +57,16 @@ app.get("/api/health", (req, res) => {
 });
 
 app.use((err, req, res, next) => {
+  if (err.message === "Not allowed by CORS") {
+    console.warn(`[CORS] Rejected origin: ${req.headers.origin || "(none)"} — method: ${req.method} — path: ${req.originalUrl}`);
+    return res.status(403).json({ message: "Not allowed by CORS" });
+  }
   console.error("SERVER ERROR:", err.stack || err.message || err);
   res.status(500).json({ message: "Internal server error" });
 });
 
-console.log("[Config] env vars loaded:", {
-  ONESIGNAL_APP_ID: process.env.ONESIGNAL_APP_ID ? "set" : "MISSING",
-  ONESIGNAL_REST_API_KEY: process.env.ONESIGNAL_REST_API_KEY ? "set" : "MISSING",
-  SUPABASE_URL: process.env.SUPABASE_URL ? "set" : "MISSING",
-  SUPABASE_SECRET_KEY: process.env.SUPABASE_SECRET_KEY ? "set" : "MISSING",
-  JWT_SECRET: process.env.JWT_SECRET ? "set" : "MISSING",
-  VERCEL: process.env.VERCEL === "1" ? "yes" : "no",
-});
-
-if (process.env.ONESIGNAL_APP_ID && process.env.ONESIGNAL_REST_API_KEY) {
-  console.log("[Config] OneSignal: configured");
-} else {
-  console.warn("[Config] OneSignal: NOT CONFIGURED — set ONESIGNAL_APP_ID and ONESIGNAL_REST_API_KEY in backend/.env");
-}
+const onesignalOk = !!(process.env.ONESIGNAL_APP_ID && process.env.ONESIGNAL_REST_API_KEY);
+console.log("[Config] OneSignal:", onesignalOk ? "configured" : "NOT CONFIGURED");
 
 seedAdmin();
 seedTeam();

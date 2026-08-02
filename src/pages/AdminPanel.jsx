@@ -1,7 +1,7 @@
 import { useState, useEffect, useContext, useCallback } from "react";
 import { Navigate } from "react-router-dom";
 import { FaFacebook, FaInstagram, FaTiktok } from "react-icons/fa";
-import { Users, Settings, Plus, UserPlus, QrCode, Calendar, Save, Image, Trash2, Upload, User, Download, Search, MapPin, Award, Pencil, Star, Menu, X, Bell, Send } from "lucide-react";
+import { Users, Settings, Plus, UserPlus, QrCode, Calendar, Save, Image, Trash2, Upload, User, Download, Search, MapPin, Award, Pencil, Star, Menu, X, Bell, Send, Smartphone, Eye, Inbox } from "lucide-react";
 import { AuthContext } from "../context/AuthContext";
 import axios from "../utils/axios";
 import { QRCodeCanvas } from "qrcode.react";
@@ -14,12 +14,12 @@ const INITIAL_COMMITTEES = [
   { id: "chairman", label: "Chairman of the MT Club Board", headName: "", headImage: "" },
   { id: "leadership", label: "Team Leaders", headName: "", headImage: "", viceName: "", viceImage: "" },
   { id: "oc", label: "OC", headName: "", headImage: "", viceName: "", viceImage: "", leader1Name: "", leader1Image: "", leader2Name: "", leader2Image: "" },
-  { id: "tech", label: "Tech", headName: "", headImage: "", viceName: "", viceImage: "" },
-  { id: "pr", label: "PR", headName: "", headImage: "", viceName: "", viceImage: "" },
-  { id: "hr", label: "HR", headName: "", headImage: "", viceName: "", viceImage: "", leaderName: "", leaderImage: "" },
+  { id: "tech", label: "Tech", headName: "", headImage: "", viceName: "", viceImage: "", leaderName: "", leaderImage: "" },
+  { id: "pr", label: "PR", headName: "", headImage: "", viceName: "", viceImage: "", leaderName: "", leaderImage: "" },
+  { id: "hr", label: "HR", headName: "", headImage: "", viceName: "", viceImage: "", leader1Name: "", leader1Image: "", leader2Name: "", leader2Image: "" },
   { id: "logistics", label: "Logistics", headName: "", headImage: "", viceName: "", viceImage: "", leaderName: "", leaderImage: "" },
-  { id: "firstaid", label: "First Aid", headName: "", headImage: "", viceName: "", viceImage: "" },
-  { id: "media", label: "Media", headName: "", headImage: "", viceName: "", viceImage: "" },
+  { id: "firstaid", label: "First Aid", headName: "", headImage: "", viceName: "", viceImage: "", leaderName: "", leaderImage: "" },
+  { id: "media", label: "Media", headName: "", headImage: "", viceName: "", viceImage: "", leaderName: "", leaderImage: "" },
 ];
 
 function MemberCard({ committeeId, role, data, editTeamName, setEditTeamName, onSave, onDeleteImage }) {
@@ -265,13 +265,14 @@ export default function AdminPanel() {
           <div className="grid md:grid-cols-2 gap-4">
             <MemberCard committeeId={c.id} role="head" data={{ id: c.headId, name: c.headName, imageUrl: c.headImage }} editTeamName={editTeamName} setEditTeamName={setEditTeamName} onSave={handleSave} onDeleteImage={handleDeleteImage} />
             {c.id !== "chairman" && <MemberCard committeeId={c.id} role="vice" data={{ id: c.viceId, name: c.viceName, imageUrl: c.viceImage }} editTeamName={editTeamName} setEditTeamName={setEditTeamName} onSave={handleSave} onDeleteImage={handleDeleteImage} />}
-            {c.id === "oc" && <>
-              <MemberCard committeeId={c.id} role="leader1" data={{ id: c.leader1Id, name: c.leader1Name, imageUrl: c.leader1Image }} editTeamName={editTeamName} setEditTeamName={setEditTeamName} onSave={handleSave} onDeleteImage={handleDeleteImage} />
-              <MemberCard committeeId={c.id} role="leader2" data={{ id: c.leader2Id, name: c.leader2Name, imageUrl: c.leader2Image }} editTeamName={editTeamName} setEditTeamName={setEditTeamName} onSave={handleSave} onDeleteImage={handleDeleteImage} />
-            </>}
-            {(c.id === "hr" || c.id === "logistics") && (
+            {c.id !== "chairman" && c.id !== "leadership" && (c.id === "oc" || c.id === "hr" ? (
+              <>
+                <MemberCard committeeId={c.id} role="leader1" data={{ id: c.leader1Id, name: c.leader1Name, imageUrl: c.leader1Image }} editTeamName={editTeamName} setEditTeamName={setEditTeamName} onSave={handleSave} onDeleteImage={handleDeleteImage} />
+                <MemberCard committeeId={c.id} role="leader2" data={{ id: c.leader2Id, name: c.leader2Name, imageUrl: c.leader2Image }} editTeamName={editTeamName} setEditTeamName={setEditTeamName} onSave={handleSave} onDeleteImage={handleDeleteImage} />
+              </>
+            ) : (
               <MemberCard committeeId={c.id} role="leader" data={{ id: c.leaderId, name: c.leaderName, imageUrl: c.leaderImage }} editTeamName={editTeamName} setEditTeamName={setEditTeamName} onSave={handleSave} onDeleteImage={handleDeleteImage} />
-            )}
+            ))}
           </div>
         </div>
       ))}
@@ -1399,6 +1400,7 @@ export default function AdminPanel() {
     const [title, setTitle] = useState("");
     const [body, setBody] = useState("");
     const [subtitle, setSubtitle] = useState("");
+    const [category, setCategory] = useState("general");
     const [target, setTarget] = useState("all");
     const [targetValue, setTargetValue] = useState("");
     const [importance, setImportance] = useState("default");
@@ -1413,16 +1415,23 @@ export default function AdminPanel() {
     const [history, setHistory] = useState([]);
     const [historyPage, setHistoryPage] = useState(1);
     const [historyTotal, setHistoryTotal] = useState(0);
+    const [historyCategory, setHistoryCategory] = useState("");
     const [stats, setStats] = useState(null);
     const [activeTab, setActiveTab] = useState("send");
     const [members, setMembers] = useState([]);
     const [showPreview, setShowPreview] = useState(false);
+    const [diagnostics, setDiagnostics] = useState(null);
+    const [deviceStats, setDeviceStats] = useState(null);
+    const [retrying, setRetrying] = useState(null);
+    const [audienceCount, setAudienceCount] = useState(null);
+    const [countingAudience, setCountingAudience] = useState(false);
 
     useEffect(() => {
       if (activeTab === "history") loadHistory();
       if (activeTab === "stats") loadStats();
       if (activeTab === "send" && members.length === 0) loadMembers();
-    }, [activeTab, historyPage]);
+      if (activeTab === "diagnostics") { loadDiagnostics(); loadDeviceStats(); }
+    }, [activeTab, historyPage, historyCategory]);
 
     const loadMembers = async () => {
       try {
@@ -1433,9 +1442,8 @@ export default function AdminPanel() {
 
     const loadHistory = async () => {
       try {
-        const res = await axios.get(`/api/notifications/history?page=${historyPage}&limit=20`, {
-          headers: { Authorization: `Bearer ${user.token}` },
-        });
+        const url = `/api/notifications/history?page=${historyPage}&limit=20${historyCategory ? `&category=${historyCategory}` : ""}`;
+        const res = await axios.get(url, { headers: { Authorization: `Bearer ${user.token}` } });
         setHistory(res.data?.data || []);
         setHistoryTotal(res.data?.total || 0);
       } catch {}
@@ -1443,15 +1451,50 @@ export default function AdminPanel() {
 
     const loadStats = async () => {
       try {
-        const res = await axios.get("/api/notifications/stats", {
-          headers: { Authorization: `Bearer ${user.token}` },
-        });
+        const res = await axios.get("/api/notifications/stats", { headers: { Authorization: `Bearer ${user.token}` } });
         setStats(res.data);
       } catch {}
     };
 
+    const loadDiagnostics = async () => {
+      try {
+        const res = await axios.get("/api/notifications/diagnostics", { headers: { Authorization: `Bearer ${user.token}` } });
+        setDiagnostics(res.data);
+      } catch {}
+    };
+
+    const loadDeviceStats = async () => {
+      try {
+        const res = await axios.get("/api/notifications/devices/stats", { headers: { Authorization: `Bearer ${user.token}` } });
+        setDeviceStats(res.data);
+      } catch {}
+    };
+
+    const checkAudienceCount = async () => {
+      setCountingAudience(true);
+      try {
+        const res = await axios.post("/api/notifications/audience-count",
+          { target, targetValue: target === "all" ? undefined : targetValue },
+          { headers: { Authorization: `Bearer ${user.token}` } }
+        );
+        setAudienceCount(res.data?.count ?? null);
+      } catch {
+        setAudienceCount(null);
+      } finally {
+        setCountingAudience(false);
+      }
+    };
+
+    useEffect(() => {
+      setAudienceCount(null);
+    }, [target, targetValue]);
+
     const handleSend = async () => {
       if (!title.trim() || !body.trim()) return;
+      if (importance === "urgent" && !isAdmin) {
+        toast.error("Only admins can send urgent priority notifications");
+        return;
+      }
       setSending(true);
       setSendResult(null);
       try {
@@ -1462,6 +1505,7 @@ export default function AdminPanel() {
           title: title.trim(),
           body: body.trim(),
           subtitle: subtitle.trim() || undefined,
+          category,
           target,
           targetValue: target === "all" ? undefined : targetValue,
           importance,
@@ -1493,8 +1537,9 @@ export default function AdminPanel() {
     const handleReset = () => {
       setTitle(""); setBody(""); setSubtitle(""); setTarget("all");
       setTargetValue(""); setImportance("default"); setChannel("general");
-      setDeepLink(""); setImage(""); setLargeIcon(""); setButtons(""); setSchedule("");
-      setSendResult(null); setShowPreview(false);
+      setCategory("general"); setDeepLink(""); setImage(""); setLargeIcon("");
+      setButtons(""); setSchedule(""); setSendResult(null); setShowPreview(false);
+      setAudienceCount(null);
     };
 
     const clearHistory = async () => {
@@ -1503,15 +1548,25 @@ export default function AdminPanel() {
         const res = await axios.delete("/api/notifications/history", {
           headers: { Authorization: `Bearer ${user.token}` },
         });
-        if (res.data?.success) {
-          setHistory([]);
-          setHistoryTotal(0);
-          toast.success("Notification history cleared.");
-        } else {
-          toast.error(res.data?.message || "Failed to clear history");
-        }
+        if (res.data?.success) { setHistory([]); setHistoryTotal(0); toast.success("Notification history cleared."); }
+        else toast.error(res.data?.message || "Failed to clear history");
       } catch (err) {
         toast.error(err.response?.data?.message || err.message || "Failed to clear history");
+      }
+    };
+
+    const handleRetry = async (onesignalId) => {
+      if (!onesignalId) return toast.error("No OneSignal ID to retry");
+      setRetrying(onesignalId);
+      try {
+        const res = await axios.post(`/api/notifications/retry/${onesignalId}`, {}, {
+          headers: { Authorization: `Bearer ${user.token}` },
+        });
+        toast.success(`Status: ${res.data?.recipients || 0} recipients | completed at: ${res.data?.completed_at || "pending"}`);
+      } catch (err) {
+        toast.error(err.response?.data?.message || "Retry failed");
+      } finally {
+        setRetrying(null);
       }
     };
 
@@ -1519,7 +1574,7 @@ export default function AdminPanel() {
       { value: "silent", label: "Silent", desc: "No sound, no vibration", color: "text-gray-400" },
       { value: "default", label: "Default", desc: "Normal behavior", color: "text-blue-400" },
       { value: "high", label: "High", desc: "Heads-up with sound & vibration", color: "text-orange-400" },
-      { value: "urgent", label: "Urgent", desc: "Maximum priority, full screen", color: "text-red-400" },
+      { value: "urgent", label: "Urgent", desc: isAdmin ? "Maximum priority, full screen" : "Admin only", color: "text-red-400" },
     ];
 
     const channelOptions = [
@@ -1530,12 +1585,26 @@ export default function AdminPanel() {
       { value: "emergency", label: "Emergency" },
     ];
 
+    const categoryOptions = [
+      { value: "general", label: "General" },
+      { value: "welcome", label: "Welcome" },
+      { value: "events", label: "Events" },
+      { value: "attendance", label: "Attendance" },
+      { value: "announcements", label: "Announcements" },
+      { value: "emergency", label: "Emergency" },
+      { value: "updates", label: "Updates" },
+    ];
+
     const committees = [
       { id: "hr", label: "HR" }, { id: "logistics", label: "Logistics" },
       { id: "tech", label: "Tech" }, { id: "pr", label: "PR" },
       { id: "oc", label: "OC" }, { id: "media", label: "Media" },
       { id: "firstaid", label: "First Aid" }, { id: "leadership", label: "Leadership" },
       { id: "chairman", label: "Chairman" },
+    ];
+
+    const roles = [
+      { id: "admin", label: "Admin" }, { id: "leader", label: "Leader" }, { id: "member", label: "Member" },
     ];
 
     const inputClass = "w-full bg-white/10 border border-white/20 p-3 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500/50 transition";
@@ -1547,7 +1616,9 @@ export default function AdminPanel() {
           {[
             { key: "send", icon: <Send size={14} />, label: "Composer" },
             { key: "history", icon: null, label: "History" },
-            { key: "stats", icon: null, label: "Analytics" },
+            { key: "analytics", icon: <Eye size={14} />, label: "Analytics" },
+            { key: "devices", icon: <Smartphone size={14} />, label: "Devices" },
+            { key: "diagnostics", icon: null, label: "Diagnostics" },
           ].map((tab) => (
             <button key={tab.key} onClick={() => setActiveTab(tab.key)}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition whitespace-nowrap ${activeTab === tab.key ? `${COLORS[themeColor]?.bg || "bg-cyan-500"} text-black` : "bg-white/5 hover:bg-white/10"}`}>
@@ -1560,31 +1631,49 @@ export default function AdminPanel() {
           <div className="space-y-4">
             <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl space-y-4">
               <h2 className="text-xl font-bold flex items-center gap-2"><Bell size={20} /> Notification Composer</h2>
-
-              <input type="text" placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100}
-                className={inputClass} />
-              <input type="text" placeholder="Subtitle (optional)" value={subtitle} onChange={(e) => setSubtitle(e.target.value)} maxLength={100}
-                className={inputClass} />
-              <textarea placeholder="Message body..." value={body} onChange={(e) => setBody(e.target.value)} rows={3} maxLength={1000}
-                className={`${inputClass} resize-none`} />
-              <div className="text-right text-xs text-gray-500">{body.length}/1000</div>
+              <input type="text" placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100} className={inputClass} />
+              <div className="flex justify-between items-center">
+                <input type="text" placeholder="Subtitle (optional)" value={subtitle} onChange={(e) => setSubtitle(e.target.value)} maxLength={100} className={inputClass} />
+              </div>
+              <div>
+                <textarea placeholder="Message body..." value={body} onChange={(e) => setBody(e.target.value)} rows={3} maxLength={1000}
+                  className={`${inputClass} resize-none`} />
+                <div className="flex justify-between text-xs text-gray-500 mt-1">
+                  <span>Character count</span>
+                  <span className={body.length > 900 ? "text-orange-400" : body.length >= 1000 ? "text-red-400" : ""}>{body.length}/1000</span>
+                </div>
+              </div>
             </div>
 
             <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl space-y-4">
-              <h3 className="font-semibold text-white/80">Target</h3>
-              <select value={target} onChange={(e) => { setTarget(e.target.value); setTargetValue(""); }}
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-white/80">Target</h3>
+                <button onClick={checkAudienceCount} disabled={countingAudience || target === "segment"}
+                  className="text-xs px-3 py-1 bg-white/10 hover:bg-white/15 rounded-lg transition disabled:opacity-40">
+                  {countingAudience ? "Counting..." : "Check Audience"}
+                </button>
+              </div>
+              <select value={target} onChange={(e) => { setTarget(e.target.value); setTargetValue(""); setAudienceCount(null); }}
                 className={selectClass}>
                 <option value="all">Everyone</option>
                 <option value="committee">Committee</option>
+                <option value="role">Role</option>
                 <option value="user">Specific Member</option>
                 <option value="multiple_users">Multiple Members (comma IDs)</option>
                 <option value="external_id">External ID</option>
+                <option value="tag">Tag</option>
                 <option value="segment">Segment</option>
               </select>
               {target === "committee" && (
                 <select value={targetValue} onChange={(e) => setTargetValue(e.target.value)} className={selectClass}>
                   <option value="">Select Committee</option>
                   {committees.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+                </select>
+              )}
+              {target === "role" && (
+                <select value={targetValue} onChange={(e) => setTargetValue(e.target.value)} className={selectClass}>
+                  <option value="">Select Role</option>
+                  {roles.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
                 </select>
               )}
               {target === "user" && (
@@ -1594,16 +1683,23 @@ export default function AdminPanel() {
                 </select>
               )}
               {target === "multiple_users" && (
-                <input type="text" placeholder="User IDs (comma separated: 1,2,3)" value={targetValue} onChange={(e) => setTargetValue(e.target.value)}
-                  className={inputClass} />
+                <input type="text" placeholder="User IDs (comma separated: 1,2,3)" value={targetValue} onChange={(e) => setTargetValue(e.target.value)} className={inputClass} />
               )}
               {target === "external_id" && (
-                <input type="text" placeholder="External ID" value={targetValue} onChange={(e) => setTargetValue(e.target.value)}
-                  className={inputClass} />
+                <input type="text" placeholder="External ID (comma separated for multiple)" value={targetValue} onChange={(e) => setTargetValue(e.target.value)} className={inputClass} />
+              )}
+              {target === "tag" && (
+                <input type="text" placeholder="Tag key=value (e.g. plan=premium)" value={targetValue} onChange={(e) => setTargetValue(e.target.value)} className={inputClass} />
               )}
               {target === "segment" && (
-                <input type="text" placeholder="Segment name" value={targetValue} onChange={(e) => setTargetValue(e.target.value)}
-                  className={inputClass} />
+                <input type="text" placeholder="Segment name" value={targetValue} onChange={(e) => setTargetValue(e.target.value)} className={inputClass} />
+              )}
+              {audienceCount !== null && (
+                <div className={`p-3 rounded-xl text-sm ${audienceCount === 0 ? "bg-red-500/10 border border-red-500/30 text-red-400" : "bg-green-500/10 border border-green-500/30 text-green-400"}`}>
+                  {audienceCount === 0
+                    ? "No subscribed devices found. Notification cannot be delivered."
+                    : `${audienceCount} subscribed device(s) found for this target.`}
+                </div>
               )}
             </div>
 
@@ -1611,8 +1707,13 @@ export default function AdminPanel() {
               <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl space-y-3">
                 <h3 className="font-semibold text-white/80">Importance</h3>
                 {importanceOptions.map((opt) => (
-                  <label key={opt.value} className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer transition border ${importance === opt.value ? "border-cyan-500/50 bg-white/10" : "border-transparent hover:bg-white/5"}`}>
-                    <input type="radio" name="importance" value={opt.value} checked={importance === opt.value} onChange={() => setImportance(opt.value)}
+                  <label key={opt.value}
+                    className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer transition border ${
+                      importance === opt.value ? "border-cyan-500/50 bg-white/10" : "border-transparent hover:bg-white/5"
+                    } ${opt.value === "urgent" && !isAdmin ? "opacity-40 cursor-not-allowed" : ""}`}>
+                    <input type="radio" name="importance" value={opt.value} checked={importance === opt.value}
+                      onChange={() => { if (opt.value === "urgent" && !isAdmin) return; setImportance(opt.value); }}
+                      disabled={opt.value === "urgent" && !isAdmin}
                       className="accent-cyan-500" />
                     <div>
                       <span className={`font-medium ${opt.color}`}>{opt.label}</span>
@@ -1623,43 +1724,51 @@ export default function AdminPanel() {
               </div>
 
               <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl space-y-3">
-                <h3 className="font-semibold text-white/80">Channel</h3>
+                <h3 className="font-semibold text-white/80">Options</h3>
+                <select value={category} onChange={(e) => setCategory(e.target.value)} className={selectClass}>
+                  {categoryOptions.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
                 <select value={channel} onChange={(e) => setChannel(e.target.value)} className={selectClass}>
                   {channelOptions.map((ch) => <option key={ch.value} value={ch.value}>{ch.label}</option>)}
                 </select>
-                <input type="text" placeholder="Deep Link (e.g. events/123)" value={deepLink} onChange={(e) => setDeepLink(e.target.value)}
-                  className={inputClass} />
-                <input type="text" placeholder="Image URL (optional)" value={image} onChange={(e) => setImage(e.target.value)}
-                  className={inputClass} />
-                <input type="text" placeholder="Large Icon URL (optional)" value={largeIcon} onChange={(e) => setLargeIcon(e.target.value)}
-                  className={inputClass} />
-                <input type="text" placeholder="Buttons (comma separated: View, Open)" value={buttons} onChange={(e) => setButtons(e.target.value)}
-                  className={inputClass} />
-                <input type="datetime-local" value={schedule} onChange={(e) => setSchedule(e.target.value)}
-                  className={`${inputClass} [color-scheme:dark]`} />
+                <input type="text" placeholder="Deep Link (e.g. /events/123)" value={deepLink} onChange={(e) => setDeepLink(e.target.value)} className={inputClass} />
+                <input type="text" placeholder="Image URL (optional)" value={image} onChange={(e) => setImage(e.target.value)} className={inputClass} />
+                <input type="text" placeholder="Large Icon URL (optional)" value={largeIcon} onChange={(e) => setLargeIcon(e.target.value)} className={inputClass} />
+                <input type="text" placeholder="Buttons (comma separated: View, Open)" value={buttons} onChange={(e) => setButtons(e.target.value)} className={inputClass} />
+                <input type="datetime-local" value={schedule} onChange={(e) => setSchedule(e.target.value)} className={`${inputClass} [color-scheme:dark]`} />
                 {schedule && <p className="text-xs text-yellow-400">Scheduled for {new Date(schedule).toLocaleString()}</p>}
               </div>
             </div>
 
             {showPreview && (
               <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl">
-                <h3 className="font-semibold text-white/80 mb-3">Preview</h3>
-                <div className="bg-white/10 p-4 rounded-xl max-w-sm mx-auto">
-                  <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 bg-cyan-500 rounded-full flex items-center justify-center text-black font-bold text-sm">MT</div>
-                    <div className="flex-1">
-                      <p className="text-xs text-gray-400">MT Club</p>
-                      <p className="font-semibold text-sm">{title || "Title"}</p>
-                      {subtitle && <p className="text-xs text-gray-400">{subtitle}</p>}
-                      <p className="text-sm text-gray-300 mt-1">{body || "Body text"}</p>
-                      {image && <img src={image} alt="" className="mt-2 rounded-lg max-h-32 w-full object-cover" />}
+                <h3 className="font-semibold text-white/80 mb-3">Mobile Preview</h3>
+                <div className="max-w-xs mx-auto">
+                  <div className="bg-gray-900 rounded-3xl p-4 border border-white/10">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-7 h-7 bg-cyan-500 rounded-full flex items-center justify-center text-black font-bold text-[10px]">MT</div>
+                      <span className="text-[10px] text-gray-400">MT Club • now</span>
+                    </div>
+                    <div className="bg-white/5 rounded-xl p-3">
+                      <p className="text-xs font-bold text-white">{title || "Notification Title"}</p>
+                      {subtitle && <p className="text-[10px] text-gray-500">{subtitle}</p>}
+                      <p className="text-xs text-gray-300 mt-1 leading-relaxed">{body || "Your notification message will appear here..."}</p>
+                      {image && <img src={image} alt="" className="mt-2 rounded-lg max-h-24 w-full object-cover" />}
+                      {buttons.trim() && (
+                        <div className="mt-2 flex gap-2">
+                          {buttons.split(",").slice(0, 2).map((b, i) => (
+                            <span key={i} className="text-[10px] px-2 py-1 bg-white/10 rounded text-cyan-400">{b.trim()}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between mt-2">
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded ${importance === "urgent" ? "bg-red-500/20 text-red-400" : importance === "high" ? "bg-orange-500/20 text-orange-400" : "bg-white/10 text-gray-400"}`}>
+                        {importance.toUpperCase()}
+                      </span>
+                      <span className="text-[9px] text-gray-500">{channel}</span>
                     </div>
                   </div>
-                </div>
-                <div className="text-center mt-3">
-                  <span className={`text-xs px-2 py-1 rounded ${importance === "urgent" ? "bg-red-500/20 text-red-400" : importance === "high" ? "bg-orange-500/20 text-orange-400" : "bg-white/10 text-gray-400"}`}>
-                    {importance.toUpperCase()} • {channel}
-                  </span>
                 </div>
               </div>
             )}
@@ -1669,12 +1778,11 @@ export default function AdminPanel() {
                 className="px-4 py-3 rounded-xl font-medium bg-white/10 hover:bg-white/15 transition text-sm">
                 {showPreview ? "Hide Preview" : "Preview"}
               </button>
-              <button onClick={handleSend} disabled={sending || !title.trim() || !body.trim()}
+              <button onClick={handleSend} disabled={sending || !title.trim() || !body.trim() || (importance === "urgent" && !isAdmin)}
                 className={`flex-1 px-6 py-3 rounded-xl font-semibold transition ${COLORS[themeColor]?.bg || "bg-cyan-500"} text-black disabled:opacity-40 disabled:cursor-not-allowed`}>
-                {sending ? "Sending..." : schedule ? "Schedule Notification" : "Send Notification"}
+                {sending ? "Sending..." : schedule ? "Schedule Notification" : "Send Now"}
               </button>
-              <button onClick={handleReset}
-                className="px-4 py-3 rounded-xl font-medium bg-white/10 hover:bg-white/15 transition text-sm">
+              <button onClick={handleReset} className="px-4 py-3 rounded-xl font-medium bg-white/10 hover:bg-white/15 transition text-sm">
                 Reset
               </button>
             </div>
@@ -1683,7 +1791,7 @@ export default function AdminPanel() {
               <div className={`p-4 rounded-xl border ${sendResult.error ? "bg-red-500/10 border-red-500/30" : "bg-green-500/10 border-green-500/30"}`}>
                 <p className="font-semibold">{sendResult.error ? "Send Failed" : "Send Result"}</p>
                 {sendResult.sent !== undefined && <p className="text-sm mt-1">Delivered to {sendResult.sent} device(s)</p>}
-                {sendResult.sent > 0 && <p className="text-xs text-gray-400 mt-1">{sendResult.sent} device(s) received</p>}
+                {sendResult.audienceCount !== undefined && sendResult.audienceCount >= 0 && <p className="text-xs text-gray-400 mt-1">Target audience: {sendResult.audienceCount} device(s)</p>}
                 {sendResult.error && <p className="text-sm text-red-400 mt-1">{sendResult.error}</p>}
               </div>
             )}
@@ -1692,14 +1800,21 @@ export default function AdminPanel() {
 
         {activeTab === "history" && (
           <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
               <h2 className="text-xl font-bold">Notification History</h2>
-              {isAdmin && history.length > 0 && (
-                <button onClick={clearHistory}
-                  className="flex items-center gap-2 px-4 py-2 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium hover:bg-red-500/30 transition">
-                  🗑 Clear Notification History
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                <select value={historyCategory} onChange={(e) => { setHistoryCategory(e.target.value); setHistoryPage(1); }}
+                  className="bg-white/10 border border-white/20 p-2 rounded-lg text-sm text-white [color-scheme:dark]">
+                  <option value="">All Categories</option>
+                  {categoryOptions.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+                {isAdmin && history.length > 0 && (
+                  <button onClick={clearHistory}
+                    className="flex items-center gap-2 px-4 py-2 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium hover:bg-red-500/30 transition">
+                    Clear History
+                  </button>
+                )}
+              </div>
             </div>
             {history.length === 0 ? (
               <p className="text-gray-400">No notifications sent yet</p>
@@ -1709,21 +1824,40 @@ export default function AdminPanel() {
                   <div key={n.id} className="p-4 bg-white/5 rounded-xl border border-white/10">
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <p className="font-semibold">{n.title}</p>
-                          {n.sent_count > 0 && <span className="text-xs px-1.5 py-0.5 bg-cyan-500/20 text-cyan-400 rounded">SENT</span>}
-                          {n.error && <span className="text-xs px-1.5 py-0.5 bg-red-500/20 text-red-400 rounded">ERR</span>}
+                          {n.status === "failed" && <span className="text-xs px-1.5 py-0.5 bg-red-500/20 text-red-400 rounded">FAILED</span>}
+                          {n.sent_count > 0 && n.status !== "failed" && <span className="text-xs px-1.5 py-0.5 bg-green-500/20 text-green-400 rounded">SENT</span>}
+                          {n.importance && n.importance !== "default" && (
+                            <span className={`text-xs px-1.5 py-0.5 rounded ${n.importance === "urgent" ? "bg-red-500/20 text-red-400" : n.importance === "high" ? "bg-orange-500/20 text-orange-400" : "bg-white/10 text-gray-400"}`}>
+                              {n.importance.toUpperCase()}
+                            </span>
+                          )}
+                          {n.channel && n.channel !== "general" && (
+                            <span className="text-xs px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded">{n.channel}</span>
+                          )}
+                          {n.category && n.category !== "general" && (
+                            <span className="text-xs px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded">{n.category}</span>
+                          )}
                         </div>
                         <p className="text-sm text-gray-400 mt-1">{n.body}</p>
                       </div>
                       <span className="text-xs text-gray-500 whitespace-nowrap ml-2">{new Date(n.created_at).toLocaleString()}</span>
                     </div>
-                    <div className="flex flex-wrap gap-2 mt-2">
+                    <div className="flex flex-wrap gap-2 mt-2 items-center">
                       <span className="text-xs px-2 py-0.5 bg-white/10 rounded">{n.target}</span>
                       {n.target_value && <span className="text-xs px-2 py-0.5 bg-white/10 rounded">{n.target_value}</span>}
                       {n.sent_count > 0 && <span className="text-xs px-2 py-0.5 bg-green-500/20 text-green-400 rounded">{n.sent_count} sent</span>}
+                      {n.delivered_count > 0 && <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded">{n.delivered_count} delivered</span>}
+                      {n.clicked_count > 0 && <span className="text-xs px-2 py-0.5 bg-purple-500/20 text-purple-400 rounded">{n.clicked_count} clicked</span>}
                       {n.members?.name && <span className="text-xs px-2 py-0.5 bg-white/10 rounded">by {n.members.name}</span>}
-                      {n.error && <span className="text-xs px-2 py-0.5 bg-red-500/20 text-red-400 rounded">{n.error}</span>}
+                      {n.error && <span className="text-xs px-2 py-0.5 bg-red-500/20 text-red-400 rounded max-w-[200px] truncate">{n.error}</span>}
+                      {n.onesignal_id && (
+                        <button onClick={() => handleRetry(n.onesignal_id)} disabled={retrying === n.onesignal_id}
+                          className="text-xs px-2 py-0.5 bg-yellow-500/20 text-yellow-400 rounded hover:bg-yellow-500/30 transition disabled:opacity-40">
+                          {retrying === n.onesignal_id ? "Checking..." : "Check Status"}
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1741,35 +1875,233 @@ export default function AdminPanel() {
           </div>
         )}
 
-        {activeTab === "stats" && (
+        {activeTab === "analytics" && (
           <div className="space-y-4">
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
               {[
-                { label: "Total Members", value: stats?.totalMembers },
-                { label: "Members with Push", value: stats?.membersWithPush },
-                { label: "Members without Push", value: stats?.membersWithoutPush },
-                { label: "Notifications Sent", value: stats?.totalNotificationsSent },
-                { label: "Total Delivered", value: stats?.totalDelivered },
+                { label: "Total Sent", value: stats?.totalSent, color: "text-cyan-400" },
+                { label: "Delivered", value: stats?.totalDelivered, color: "text-green-400" },
+                { label: "Opened", value: stats?.totalOpened, color: "text-blue-400" },
+                { label: "Clicked", value: stats?.totalClicked, color: "text-purple-400" },
+                { label: "Failed", value: stats?.totalFailed, color: "text-red-400" },
               ].map((s) => (
-                <div key={s.label} className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl text-center">
-                  <p className="text-3xl font-bold">{s.value ?? "—"}</p>
-                  <p className="text-sm text-gray-400 mt-2">{s.label}</p>
+                <div key={s.label} className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl text-center">
+                  <p className={`text-2xl font-bold ${s.color}`}>{s.value ?? "—"}</p>
+                  <p className="text-xs text-gray-400 mt-1">{s.label}</p>
                 </div>
               ))}
             </div>
-            {stats?.platforms && (
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {[
+                { label: "Delivery Rate", value: stats?.deliveryRate, color: "text-green-400" },
+                { label: "Open Rate", value: stats?.openRate, color: "text-blue-400" },
+                { label: "Click Rate", value: stats?.clickRate, color: "text-purple-400" },
+              ].map((s) => (
+                <div key={s.label} className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl text-center">
+                  <p className={`text-3xl font-bold ${s.color}`}>{s.value ?? "—"}%</p>
+                  <p className="text-xs text-gray-400 mt-1">{s.label}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {stats?.platforms && Object.keys(stats.platforms).length > 0 && (
+                <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl">
+                  <h3 className="font-semibold mb-3">Devices by Platform</h3>
+                  <div className="space-y-2">
+                    {Object.entries(stats.platforms).sort((a, b) => b[1] - a[1]).map(([p, count]) => (
+                      <div key={p} className="flex items-center gap-3">
+                        <div className="flex-1 bg-white/5 rounded-full h-3 overflow-hidden">
+                          <div className="h-full bg-cyan-500 rounded-full" style={{ width: `${(count / (stats.membersWithPush || 1)) * 100}%` }} />
+                        </div>
+                        <span className="text-sm font-medium w-24 text-right capitalize">{p}</span>
+                        <span className="text-sm text-gray-400 w-10 text-right">{count}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {stats?.browsers && Object.keys(stats.browsers).length > 0 && (
+                <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl">
+                  <h3 className="font-semibold mb-3">Devices by Browser</h3>
+                  <div className="space-y-2">
+                    {Object.entries(stats.browsers).sort((a, b) => b[1] - a[1]).map(([b, count]) => (
+                      <div key={b} className="flex items-center gap-3">
+                        <div className="flex-1 bg-white/5 rounded-full h-3 overflow-hidden">
+                          <div className="h-full bg-blue-500 rounded-full" style={{ width: `${(count / (stats.membersWithPush || 1)) * 100}%` }} />
+                        </div>
+                        <span className="text-sm font-medium w-24 text-right capitalize">{b}</span>
+                        <span className="text-sm text-gray-400 w-10 text-right">{count}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {stats?.categoryStats && Object.keys(stats.categoryStats).length > 0 && (
               <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl">
-                <h3 className="font-semibold mb-3">Devices by Platform</h3>
-                <div className="flex gap-4">
-                  {Object.entries(stats.platforms).map(([p, count]) => (
-                    <div key={p} className="text-center">
-                      <p className="text-2xl font-bold">{count}</p>
-                      <p className="text-sm text-gray-400 capitalize">{p}</p>
-                    </div>
-                  ))}
+                <h3 className="font-semibold mb-3">Performance by Category</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-gray-400 border-b border-white/10">
+                        <th className="text-left py-2 px-3">Category</th>
+                        <th className="text-right py-2 px-3">Count</th>
+                        <th className="text-right py-2 px-3">Sent</th>
+                        <th className="text-right py-2 px-3">Delivered</th>
+                        <th className="text-right py-2 px-3">Opened</th>
+                        <th className="text-right py-2 px-3">Clicked</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(stats.categoryStats).sort((a, b) => b[1].sent - a[1].sent).map(([cat, data]) => (
+                        <tr key={cat} className="border-b border-white/5">
+                          <td className="py-2 px-3 capitalize">{cat}</td>
+                          <td className="text-right py-2 px-3">{data.count}</td>
+                          <td className="text-right py-2 px-3 text-cyan-400">{data.sent}</td>
+                          <td className="text-right py-2 px-3 text-green-400">{data.delivered}</td>
+                          <td className="text-right py-2 px-3 text-blue-400">{data.opened}</td>
+                          <td className="text-right py-2 px-3 text-purple-400">{data.clicked}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {activeTab === "devices" && (
+          <div className="space-y-4">
+            {deviceStats ? (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                  {[
+                    { label: "Total Members", value: deviceStats.totalMembers, color: "text-white" },
+                    { label: "Subscribed", value: deviceStats.subscribedCount, color: "text-green-400" },
+                    { label: "No Device", value: deviceStats.missingCount, color: "text-red-400" },
+                    { label: "Inactive (30d)", value: deviceStats.inactiveDevices, color: "text-yellow-400" },
+                    { label: "Total Devices", value: deviceStats.totalDevices, color: "text-cyan-400" },
+                    { label: "Multi-Device Users", value: deviceStats.multiDeviceUsers, color: "text-purple-400" },
+                  ].map((s) => (
+                    <div key={s.label} className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl text-center">
+                      <p className={`text-2xl font-bold ${s.color}`}>{s.value ?? "—"}</p>
+                      <p className="text-xs text-gray-400 mt-1">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl">
+                  <h3 className="font-semibold mb-4">Platform Distribution</h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    {Object.entries(deviceStats.platformDistribution || {}).sort((a, b) => b[1] - a[1]).map(([p, count]) => (
+                      <div key={p} className="bg-white/5 rounded-xl p-4 text-center">
+                        <p className="text-xl font-bold text-cyan-400">{count}</p>
+                        <p className="text-sm text-gray-400 capitalize">{p}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl">
+                  <h3 className="font-semibold mb-4">Browser Distribution</h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    {Object.entries(deviceStats.browserDistribution || {}).sort((a, b) => b[1] - a[1]).map(([b, count]) => (
+                      <div key={b} className="bg-white/5 rounded-xl p-4 text-center">
+                        <p className="text-xl font-bold text-blue-400">{count}</p>
+                        <p className="text-sm text-gray-400 capitalize">{b}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : <p className="text-gray-400">Loading device stats...</p>}
+          </div>
+        )}
+
+        {activeTab === "diagnostics" && (
+          <div className="space-y-4">
+            <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-bold">Notification Diagnostics</h2>
+                <button onClick={() => { loadDiagnostics(); loadDeviceStats(); }}
+                  className="px-4 py-2 bg-white/10 hover:bg-white/15 rounded-lg text-sm font-medium transition">
+                  Refresh
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-3">
+                  <h3 className="font-semibold text-white/80">Backend Status</h3>
+                  {diagnostics?.backend ? (
+                    <div className="space-y-2">
+                      <div className="flex justify-between p-3 bg-white/5 rounded-xl">
+                        <span className="text-gray-400">Configured</span>
+                        <span className={diagnostics.backend.configured ? "text-green-400" : "text-red-400"}>
+                          {diagnostics.backend.configured ? "Yes" : "No"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between p-3 bg-white/5 rounded-xl">
+                        <span className="text-gray-400">App ID</span>
+                        <span className="text-white font-mono text-sm">{diagnostics.backend.appId}</span>
+                      </div>
+                      <div className="flex justify-between p-3 bg-white/5 rounded-xl">
+                        <span className="text-gray-400">REST API Key</span>
+                        <span className={`font-mono text-sm ${diagnostics.backend.apiKey.startsWith("MISSING") ? "text-red-400" : "text-green-400"}`}>
+                          {diagnostics.backend.apiKey}
+                        </span>
+                      </div>
+                    </div>
+                  ) : <p className="text-gray-400">Loading...</p>}
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="font-semibold text-white/80">Your Subscription</h3>
+                  {diagnostics?.user ? (
+                    <div className="space-y-2">
+                      {[
+                        { label: "OneSignal ID", value: diagnostics.user.onesignalId, good: !!diagnostics.user.onesignalId },
+                        { label: "User ID", value: diagnostics.user.onesignalUserId, good: !!diagnostics.user.onesignalUserId },
+                        { label: "Browser", value: diagnostics.user.browser },
+                        { label: "Platform", value: diagnostics.user.platform },
+                        { label: "Language", value: diagnostics.user.language },
+                        { label: "Last Seen", value: diagnostics.user.lastSeen ? new Date(diagnostics.user.lastSeen).toLocaleString() : null },
+                      ].map((item) => (
+                        <div key={item.label} className="flex justify-between p-3 bg-white/5 rounded-xl">
+                          <span className="text-gray-400">{item.label}</span>
+                          <span className={`font-mono text-sm ${item.good === true ? "text-green-400" : item.good === false ? "text-red-400" : "text-white"}`}>
+                            {item.value ? (typeof item.value === "string" && item.value.length > 16 ? item.value.slice(0, 12) + "..." : item.value) : "—"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <p className="text-gray-400">No subscription data found</p>}
+                </div>
+              </div>
+
+              {diagnostics?.devices && diagnostics.devices.length > 0 && (
+                <div className="space-y-3">
+                  <h3 className="font-semibold text-white/80">Registered Devices ({diagnostics.devices.length})</h3>
+                  <div className="space-y-2">
+                    {diagnostics.devices.map((d) => (
+                      <div key={d.id} className="flex items-center justify-between p-3 bg-white/5 rounded-xl">
+                        <div className="flex items-center gap-3">
+                          <Smartphone size={16} className="text-gray-400" />
+                          <div>
+                            <p className="text-sm font-mono">{d.onesignal_subscription_id?.slice(0, 16) || "—"}...</p>
+                            <p className="text-xs text-gray-500">{d.browser || "—"} / {d.platform || "—"}</p>
+                          </div>
+                        </div>
+                        <span className="text-xs text-gray-500">{d.last_seen ? new Date(d.last_seen).toLocaleString() : "—"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -1778,7 +2110,8 @@ export default function AdminPanel() {
 
   const renderPage = () => {
     if (loading) return <p className="text-gray-400">Loading...</p>;
-    if (!isAdmin && ["posts", "settings", "qr", "notifications"].includes(activePage)) return <DashboardPage />;
+    if (!isAdmin && user?.role !== "leader" && ["posts", "settings", "qr"].includes(activePage)) return <DashboardPage />;
+    if (!isAdmin && activePage === "notifications") return <DashboardPage />;
     switch (activePage) {
       case "dashboard": return <DashboardPage />;
       case "posts": return <PostsPage />;
@@ -1806,7 +2139,7 @@ export default function AdminPanel() {
         <NavItem label="Attendance" icon={<Calendar />} pageKey="attendance" />
         <NavItem label="Points" icon={<Award />} pageKey="points" />
         {isAdmin && <NavItem label="Posts" icon={<Plus />} pageKey="posts" />}
-        {isAdmin && <NavItem label="Notifications" icon={<Bell />} pageKey="notifications" />}
+        {(isAdmin || user?.role === "leader") && <NavItem label="Notifications" icon={<Bell />} pageKey="notifications" />}
         <NavItem label="Team" icon={<Image />} pageKey="team" />
         {isAdmin && <NavItem label="Settings" icon={<Settings />} pageKey="settings" />}
       </div>

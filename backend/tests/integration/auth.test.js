@@ -4,6 +4,10 @@ import request from "supertest";
 
 const JWT_SECRET = "MTCLUB_SECRET";
 
+vi.mock("express-rate-limit", () => ({
+  default: () => (req, res, next) => next(),
+}));
+
 vi.mock("../../config/supabase.js", () => ({
   supabase: {
     from: vi.fn(),

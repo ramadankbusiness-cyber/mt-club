@@ -1,12 +1,13 @@
-import { useState, useEffect, useContext, useRef } from "react";
-import { Star, User, Shield, CalendarDays, Award, Camera } from "lucide-react";
+import { useState, useEffect, useContext, useRef, useCallback } from "react";
+import { Star, User, Shield, CalendarDays, Award, Camera, Smartphone, Monitor, Tablet, Globe, Trash2, Unlink } from "lucide-react";
 import Header from "../components/Header";
 import { AuthContext } from "../context/AuthContext";
 import axios from "../utils/axios";
 import { useToast } from "../components/Toast";
+import { isGoogleConfigured } from "../services/googleAuth";
 
 export default function Profile() {
-  const { user, login } = useContext(AuthContext);
+  const { user, login, unlinkGoogle } = useContext(AuthContext);
   const toast = useToast();
   const [profile, setProfile] = useState(null);
   const [oldPassword, setOldPassword] = useState("");
@@ -16,6 +17,9 @@ export default function Profile() {
   const [pwMsgType, setPwMsgType] = useState("");
   const [pendingImage, setPendingImage] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [googleStatus, setGoogleStatus] = useState(null);
+  const [devices, setDevices] = useState([]);
+  const [loadingDevices, setLoadingDevices] = useState(false);
   const fileInputRef = useRef();
   const token = user?.token;
 
@@ -27,6 +31,19 @@ export default function Profile() {
         .catch(() => {});
     };
     fetchProfile();
+    axios.get("/api/auth/google/status", { headers: { Authorization: `Bearer ${token}` } })
+      .then(res => setGoogleStatus(res.data))
+      .catch(() => {});
+    fetchDevices();
+  }, [token]);
+
+  const fetchDevices = useCallback(() => {
+    if (!token) return;
+    setLoadingDevices(true);
+    axios.get("/api/notifications/devices", { headers: { Authorization: `Bearer ${token}` } })
+      .then(res => setDevices(res.data?.devices || []))
+      .catch(() => {})
+      .finally(() => setLoadingDevices(false));
   }, [token]);
 
   const confirmImage = () => {
@@ -43,6 +60,17 @@ export default function Profile() {
       })
       .catch(() => toast.error("Failed to upload photo"))
       .finally(() => setUploading(false));
+  };
+
+  const handleRemoveDevice = async (deviceId) => {
+    if (!confirm("Remove this device?")) return;
+    try {
+      await axios.delete(`/api/notifications/devices/${deviceId}`, { headers: { Authorization: `Bearer ${token}` } });
+      setDevices(prev => prev.filter(d => d.id !== deviceId));
+      toast.success("Device removed");
+    } catch {
+      toast.error("Failed to remove device");
+    }
   };
 
   const changePassword = (e) => {
@@ -254,6 +282,79 @@ export default function Profile() {
                   Change Password
                 </button>
               </form>
+            </div>
+
+            {isGoogleConfigured() && (
+              <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl">
+                <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                  <Globe size={20} className="text-blue-400" />
+                  Google Account
+                </h2>
+                {googleStatus?.linked ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-4 p-4 bg-white/5 rounded-xl">
+                      {googleStatus.picture && (
+                        <img src={googleStatus.picture} alt="Google" className="w-12 h-12 rounded-full" />
+                      )}
+                      <div>
+                        <p className="font-semibold text-white">{googleStatus.name || user.name}</p>
+                        <p className="text-sm text-gray-400">{googleStatus.email}</p>
+                        {googleStatus.verified && <span className="text-xs text-green-400">Verified</span>}
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      Linked {googleStatus.linkedAt ? new Date(googleStatus.linkedAt).toLocaleDateString() : "previously"}
+                    </div>
+                    <button
+                      onClick={async () => {
+                        if (!confirm("Unlink your Google account? You'll need to relink it to receive notifications.")) return;
+                        await unlinkGoogle();
+                        toast.success("Google account unlinked");
+                      }}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 border border-red-500/30 text-red-400 rounded-xl hover:bg-red-500/10 transition text-sm font-medium"
+                    >
+                      <Unlink size={16} />
+                      Unlink Google Account
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-400">Google account not linked.</p>
+                )}
+              </div>
+            )}
+
+            <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl">
+              <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                <Smartphone size={20} className="text-purple-400" />
+                Connected Devices
+              </h2>
+              {loadingDevices ? (
+                <p className="text-gray-400 text-sm">Loading devices...</p>
+              ) : devices.length === 0 ? (
+                <p className="text-gray-500 text-sm">No devices registered for notifications.</p>
+              ) : (
+                <div className="space-y-3">
+                  {devices.map(d => (
+                    <div key={d.id} className="flex items-center gap-3 p-3 bg-white/5 rounded-xl border border-white/10">
+                      <div className="w-10 h-10 rounded-lg bg-white/10 flex items-center justify-center flex-shrink-0">
+                        {(d.platform || "").toLowerCase().includes("android") ? <Smartphone size={18} className="text-green-400" /> :
+                         (d.platform || "").toLowerCase().includes("ios") ? <Tablet size={18} className="text-blue-400" /> :
+                         <Monitor size={18} className="text-purple-400" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{d.browser || "Unknown browser"}</p>
+                        <p className="text-xs text-gray-400">
+                          {d.platform || "Unknown"} · Last seen {d.last_seen ? new Date(d.last_seen).toLocaleDateString() : "Never"}
+                        </p>
+                      </div>
+                      <button onClick={() => handleRemoveDevice(d.id)}
+                        className="p-2 text-red-400 hover:bg-red-500/20 rounded-lg transition">
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

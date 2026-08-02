@@ -1,95 +1,209 @@
 import express from "express";
 import { supabase } from "../config/supabase.js";
 import auth from "../middleware/auth.js";
-import { requireAdmin } from "../middleware/role.js";
-import { sendToAll, sendToUser, sendToUsers, sendToCommittee, sendToSegment, getConfig } from "../utils/onesignal.js";
+import { requireAdmin, requireLeaderOrAdmin } from "../middleware/role.js";
+import {
+  sendToAll, sendToUser, sendToUsers, sendToCommittee,
+  sendToSegment, sendToRole, sendToTag, sendToExternalIds,
+  getConfig, getSubscribedCount, buildUserNotificationRecords,
+  getGoogleIdForMember,
+} from "../utils/onesignal.js";
+
+const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID || "";
+const ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY || "";
 
 const router = express.Router();
 
-const WELCOME_TITLE = "🎉 أهلاً بيك في MT Club";
-const WELCOME_BODY = "نتمنى لك تجربة ممتعة داخل MT Club. تابع الفعاليات، سجل حضورك، واجمع النقاط واستمتع بكل جديد. 💙";
+const WELCOME_TITLE = "Welcome to MT Club";
+const WELCOME_BODY = "We are glad to have you here! Follow events, track attendance, and earn points.";
 
 async function sendWelcomeIfFirstTime(userId) {
+  if (!supabase) return;
   try {
-    const { data: existing, error: queryError } = await supabase
+    const { data: member } = await supabase
+      .from("members")
+      .select("google_id")
+      .eq("id", userId)
+      .limit(1)
+      .maybeSingle();
+
+    if (!member?.google_id) return;
+
+    const { data: existing } = await supabase
       .from("notification_history")
       .select("id")
       .eq("target", "user")
-      .eq("target_value", String(userId))
+      .eq("target_value", String(member.google_id))
       .eq("title", WELCOME_TITLE)
       .limit(1)
       .maybeSingle();
 
-    if (queryError) {
-      console.error("[OneSignal] Welcome check error:", queryError.message);
-      return;
-    }
     if (existing) return;
-
-    console.log(`[OneSignal] Sending welcome notification to user ${userId}`);
-    await sendToUser(userId, { title: WELCOME_TITLE, body: WELCOME_BODY });
+    console.log(`[ONESIGNAL] Sending welcome to user ${userId} (googleSub: ${member.google_id.substring(0, 12)}...)`);
+    await sendToUser(member.google_id, { title: WELCOME_TITLE, body: WELCOME_BODY, category: "welcome" });
   } catch (err) {
-    console.error("[OneSignal] Welcome notification error:", err.message);
+    console.error("[ONESIGNAL] Welcome error:", err.message);
   }
 }
 
-router.post("/register", auth, async (req, res) => {
-  const { platform } = req.body;
-  console.log(`[OneSignal] User ${req.user.id} registered via OneSignal (platform: ${platform || "web"})`);
-  sendWelcomeIfFirstTime(req.user.id).catch(() => {});
-  res.json({ message: "User registered for notifications" });
-});
+// ─── TASK 1: Fix Device Registration Lifecycle ──────────────────
 
 router.delete("/unregister", auth, async (req, res) => {
-  console.log(`[OneSignal] User ${req.user.id} unregistered from notifications`);
+  if (supabase) {
+    await supabase.from("members").update({ onesignal_id: null }).eq("id", req.user.id);
+    await supabase.from("notification_devices").delete().eq("member_id", req.user.id);
+  }
+  console.log(`[OneSignal] User ${req.user.id} unregistered`);
   res.json({ message: "User unregistered from notifications" });
 });
 
 router.post("/save-oneSignal-id", auth, async (req, res) => {
   try {
-    const { onesignalId } = req.body;
+    if (!supabase) {
+      console.error("[ONESIGNAL] save-oneSignal-id: Supabase client not configured");
+      return res.status(503).json({ message: "Database not available" });
+    }
+
+    const {
+      onesignalId, onesignalUserId,
+      browser, platform: devicePlatform, language, timezone, userAgent, lastSeen,
+    } = req.body;
+
     if (!onesignalId) return res.status(400).json({ message: "onesignalId is required" });
+
+    const updateData = { onesignal_id: String(onesignalId) };
+
+    if (onesignalUserId) updateData.onesignal_user_id = String(onesignalUserId);
+    if (browser) updateData.push_browser = browser;
+    if (devicePlatform) updateData.push_platform = devicePlatform;
+    if (language) updateData.push_language = language;
+    if (timezone) updateData.push_timezone = timezone;
+    updateData.push_last_seen = lastSeen || new Date().toISOString();
+    if (userAgent) updateData.push_user_agent = userAgent;
 
     const { error } = await supabase
       .from("members")
-      .update({ onesignal_id: String(onesignalId) })
+      .update(updateData)
       .eq("id", req.user.id);
 
     if (error) {
-      console.error("[OneSignal] Save ID error:", error.message);
+      console.error("[ONESIGNAL] Save ID error:", error.message);
       return res.status(500).json({ message: "Failed to save OneSignal ID" });
     }
 
-    console.log(`[OneSignal] Saved OneSignal ID for user ${req.user.id}: ${onesignalId}`);
+    try {
+      const { data: member } = await supabase
+        .from("members")
+        .select("google_id")
+        .eq("id", req.user.id)
+        .limit(1)
+        .maybeSingle();
+
+      await supabase
+        .from("notification_devices")
+        .upsert(
+          {
+            member_id: req.user.id,
+            onesignal_subscription_id: String(onesignalId),
+            onesignal_user_id: onesignalUserId ? String(onesignalUserId) : null,
+            browser: browser || null,
+            platform: devicePlatform || null,
+            language: language || null,
+            timezone: timezone || null,
+            user_agent: userAgent || null,
+            last_seen: lastSeen || new Date().toISOString(),
+            google_id: member?.google_id || null,
+          },
+          { onConflict: "member_id,onesignal_subscription_id" }
+        );
+    } catch (deviceErr) {
+      console.error("[ONESIGNAL] Device upsert warning:", deviceErr.message);
+    }
+
+    console.log(`[ONESIGNAL] Saved ID for user ${req.user.id}: ${onesignalId}`);
     res.json({ message: "OneSignal ID saved" });
   } catch (err) {
-    console.error("[OneSignal] Save ID exception:", err.message);
+    console.error("[ONESIGNAL] Save ID exception:", err.message);
     res.status(500).json({ message: "Failed to save OneSignal ID" });
   }
 });
 
-router.post("/send", requireAdmin, async (req, res) => {
+// ─── TASK 3 + 8: Improved Send with Validation + Permission Check ──
+
+router.post("/send", requireLeaderOrAdmin, async (req, res) => {
   try {
-    const { title, body, subtitle, image, largeIcon, deepLink,
-      priority, ttl, buttons, target, targetValue, schedule } = req.body;
+    if (!supabase) {
+      console.error("[ONESIGNAL] send: Supabase client not configured");
+      return res.status(503).json({ message: "Database not available" });
+    }
+
+    const {
+      title, body, subtitle, image, largeIcon, deepLink,
+      priority, ttl, buttons, target, targetValue, schedule,
+      importance, channel, silent, category,
+    } = req.body;
 
     if (!title || !body) return res.status(400).json({ message: "title and body are required" });
 
-    const options = { title, body, subtitle, image, largeIcon, deepLink, priority, ttl, buttons, schedule };
+    const effectivePriority = importance || priority || "default";
+    if (effectivePriority === "urgent" && req.user.role !== "admin") {
+      return res.status(403).json({ message: "Only admins can send urgent priority notifications" });
+    }
+
+    const audienceCount = await getSubscribedCount(target, targetValue);
+    if (audienceCount === 0 && target !== "segment") {
+      return res.status(400).json({
+        message: "No linked Google accounts found. Notification cannot be delivered.",
+        audienceCount: 0,
+        target,
+      });
+    }
+
+    const options = {
+      title, body, subtitle, image, largeIcon, deepLink,
+      priority: effectivePriority, ttl, buttons,
+      schedule, silent, category, importance, channel,
+    };
 
     let result;
 
     switch (target) {
-      case "user":
+      case "user": {
         if (!targetValue) return res.status(400).json({ message: "targetValue required for user target" });
-        result = await sendToUser(targetValue, options);
+        const memberId = parseInt(targetValue);
+        if (isNaN(memberId)) return res.status(400).json({ message: "targetValue must be a valid member ID" });
+
+        const googleSub = await getGoogleIdForMember(memberId);
+        if (!googleSub) {
+          return res.status(400).json({
+            message: "Target user has no linked Google account — cannot send notification",
+            code: "NO_GOOGLE_LINKED",
+          });
+        }
+        result = await sendToUser(googleSub, options);
         break;
+      }
 
       case "multiple_users": {
         if (!targetValue) return res.status(400).json({ message: "targetValue required for multiple_users target" });
-        const userIds = targetValue.split(",").map((s) => s.trim()).filter(Boolean);
-        if (userIds.length === 0) return res.status(400).json({ message: "No valid user IDs provided" });
-        result = await sendToUsers(userIds, options);
+        const memberIds = targetValue.split(",").map((s) => s.trim()).filter(Boolean);
+        if (memberIds.length === 0) return res.status(400).json({ message: "No valid user IDs provided" });
+
+        const { supabase: db } = await import("../config/supabase.js");
+        const { data: members } = await db
+          .from("members")
+          .select("google_id")
+          .in("id", memberIds.map(Number))
+          .not("google_id", "is", null);
+        const googleSubs = (members || []).map((m) => m.google_id).filter(Boolean);
+
+        if (googleSubs.length === 0) {
+          return res.status(400).json({
+            message: "No target users have linked Google accounts",
+            code: "NO_GOOGLE_LINKED",
+          });
+        }
+        result = await sendToUsers(googleSubs, options);
         break;
       }
 
@@ -98,14 +212,33 @@ router.post("/send", requireAdmin, async (req, res) => {
         result = await sendToCommittee(targetValue, options);
         break;
 
+      case "role":
+        if (!targetValue) return res.status(400).json({ message: "targetValue (role) required" });
+        result = await sendToRole(targetValue, options);
+        break;
+
+      case "tag": {
+        if (!targetValue) return res.status(400).json({ message: "targetValue (key=value) required" });
+        const [tagKey, ...tagValParts] = targetValue.split("=");
+        const tagValue = tagValParts.join("=");
+        if (!tagKey || !tagValue) return res.status(400).json({ message: "targetValue must be key=value format" });
+        result = await sendToTag(tagKey.trim(), tagValue.trim(), options);
+        break;
+      }
+
+      case "external_id": {
+        if (!targetValue) return res.status(400).json({ message: "targetValue (external IDs) required" });
+        const extIds = targetValue.split(",").map((s) => s.trim()).filter(Boolean);
+        if (extIds.length === 0) return res.status(400).json({ message: "No valid external IDs provided" });
+        result = extIds.length === 1
+          ? await sendToUser(extIds[0], options)
+          : await sendToExternalIds(extIds, options);
+        break;
+      }
+
       case "segment":
         if (!targetValue) return res.status(400).json({ message: "targetValue (segment name) required" });
         result = await sendToSegment(targetValue, options);
-        break;
-
-      case "external_id":
-        if (!targetValue) return res.status(400).json({ message: "targetValue (external ID) required" });
-        result = await sendToUser(targetValue, options);
         break;
 
       case "all":
@@ -114,37 +247,242 @@ router.post("/send", requireAdmin, async (req, res) => {
         break;
     }
 
+    if (result.sent > 0 && target !== "segment") {
+      await buildUserNotificationRecords({
+        title, body, category, deepLink, image,
+        target, targetValue, sentBy: req.user.id,
+        notificationHistoryId: result.historyId || null,
+      });
+    }
+
     res.json({
       message: result.error ? "Notification sent with issues" : "Notification sent",
       sent: result.sent,
       errors: result.failed || 0,
       error: result.error || null,
+      onesignalId: result.onesignalId || null,
+      audienceCount,
     });
   } catch (err) {
-    console.error("[OneSignal] Send error:", err.message);
-    res.status(500).json({ message: "Failed to send notification", error: err.message });
+    console.error("[ONESIGNAL] Send error:", err.message);
+    console.error("[ONESIGNAL] Send error stack:", err.stack);
+    const isDev = process.env.NODE_ENV !== "production";
+    res.status(500).json({
+      message: "Failed to send notification",
+      error: err.message,
+      ...(isDev && { stack: err.stack, source: "notifications.js:/send" }),
+    });
   }
 });
 
-router.delete("/clear-tokens", requireAdmin, async (_req, res) => {
-  res.json({ message: "OneSignal manages subscriptions server-side. No local tokens to clear.", removed: 0 });
+// ─── TASK 3: Audience Count Preview Endpoint ───────────────────
+
+router.post("/audience-count", auth, async (req, res) => {
+  try {
+    const { target, targetValue } = req.body;
+    const count = await getSubscribedCount(target || "all", targetValue);
+    res.json({ count });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to count audience", error: err.message });
+  }
 });
 
-router.delete("/cancel/:notificationId", requireAdmin, (_req, res) => {
-  res.status(400).json({ message: "Scheduled notification cancellation is not supported via OneSignal REST API" });
+// ─── TASK 2: Device Management Stats ──────────────────────────
+
+router.get("/devices/stats", requireAdmin, async (_req, res) => {
+  try {
+    const { data: members, error: membersError } = await supabase
+      .from("members")
+      .select("id, google_id, push_platform, push_browser, push_last_seen, enabled");
+
+    if (membersError) return res.status(500).json({ message: "Failed to fetch device stats" });
+
+    const totalMembers = members?.length || 0;
+    const enabledMembers = members?.filter((m) => m.enabled === 1) || members || [];
+
+    const linkedCount = enabledMembers.filter((m) => m.google_id).length;
+    const missingCount = enabledMembers.length - linkedCount;
+
+    const platformDist = {};
+    const browserDist = {};
+    enabledMembers.forEach((m) => {
+      if (m.push_platform) {
+        platformDist[m.push_platform] = (platformDist[m.push_platform] || 0) + 1;
+      }
+      if (m.push_browser) {
+        browserDist[m.push_browser] = (browserDist[m.push_browser] || 0) + 1;
+      }
+    });
+
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const inactiveDevices = enabledMembers.filter((m) => {
+      if (!m.google_id) return false;
+      if (!m.push_last_seen) return true;
+      return new Date(m.push_last_seen) < thirtyDaysAgo;
+    }).length;
+
+    const { count: deviceCount } = await supabase
+      .from("notification_devices")
+      .select("id", { count: "exact", head: true });
+
+    const { data: multiDeviceUsers } = await supabase
+      .from("notification_devices")
+      .select("member_id")
+      .group("member_id")
+      .having("count(*)", "gt", 1);
+
+    res.json({
+      totalMembers,
+      linkedCount,
+      missingCount,
+      inactiveDevices,
+      totalDevices: deviceCount || 0,
+      multiDeviceUsers: multiDeviceUsers?.length || 0,
+      platformDistribution: platformDist,
+      browserDistribution: browserDist,
+      thirtyDayThreshold: thirtyDaysAgo.toISOString(),
+    });
+  } catch (err) {
+    console.error("[OneSignal] Device stats error:", err.message);
+    res.status(500).json({ message: "Failed to fetch device stats" });
+  }
 });
+
+// ─── Admin: All Member Devices ───────────────────────────────
+
+router.get("/devices/all", requireAdmin, async (_req, res) => {
+  if (!supabase) return res.json({ devices: [] });
+  try {
+    const { data: devices, error } = await supabase
+      .from("notification_devices")
+      .select("id, member_id, onesignal_subscription_id, onesignal_user_id, browser, platform, language, timezone, user_agent, last_seen, active, google_id, created_at, updated_at")
+      .order("last_seen", { ascending: false });
+    if (error) {
+      console.error("[ONESIGNAL] Admin devices list error:", error.message);
+      return res.json({ devices: [] });
+    }
+    res.json({ devices: devices || [] });
+  } catch (err) {
+    console.error("[ONESIGNAL] Admin devices list error:", err.message);
+    res.json({ devices: [] });
+  }
+});
+
+router.delete("/devices/admin/:deviceId", requireAdmin, async (req, res) => {
+  if (!supabase) return res.status(500).json({ message: "Database not available" });
+  try {
+    const { error } = await supabase
+      .from("notification_devices")
+      .delete()
+      .eq("id", req.params.deviceId);
+    if (error) {
+      console.error("[OneSignal] Admin device delete error:", error.message);
+      return res.status(500).json({ message: "Failed to remove device" });
+    }
+    res.json({ message: "Device removed" });
+  } catch (err) {
+    console.error("[OneSignal] Admin device delete error:", err.message);
+    res.status(500).json({ message: "Failed to remove device" });
+  }
+});
+
+// ─── User Device Management ──────────────────────────────────
+
+router.get("/devices", auth, async (req, res) => {
+  if (!supabase) return res.json({ devices: [] });
+  try {
+    const { data: devices, error } = await supabase
+      .from("notification_devices")
+      .select("id, onesignal_subscription_id, onesignal_user_id, browser, platform, language, timezone, last_seen, active, google_id, created_at, updated_at")
+      .eq("member_id", req.user.id)
+      .order("last_seen", { ascending: false });
+    if (error) {
+      console.error("[ONESIGNAL] Devices list error:", error.message);
+      return res.json({ devices: [] });
+    }
+    res.json({ devices: devices || [] });
+  } catch (err) {
+    console.error("[ONESIGNAL] Devices list error:", err.message);
+    res.json({ devices: [] });
+  }
+});
+
+router.delete("/devices/:deviceId", auth, async (req, res) => {
+  if (!supabase) return res.status(500).json({ message: "Database not available" });
+  try {
+    const { error } = await supabase
+      .from("notification_devices")
+      .delete()
+      .eq("id", req.params.deviceId)
+      .eq("member_id", req.user.id);
+    if (error) {
+      console.error("[OneSignal] Device delete error:", error.message);
+      return res.status(500).json({ message: "Failed to remove device" });
+    }
+    res.json({ message: "Device removed" });
+  } catch (err) {
+    console.error("[OneSignal] Device delete error:", err.message);
+    res.status(500).json({ message: "Failed to remove device" });
+  }
+});
+
+// ─── Existing endpoints (improved) ────────────────────────────
+
+router.post("/retry/:onesignalId", requireAdmin, async (req, res) => {
+  try {
+    const config = getConfig();
+    if (!config.configured) {
+      return res.status(500).json({ message: "OneSignal not configured" });
+    }
+
+    const { onesignalId } = req.params;
+    if (!onesignalId) return res.status(400).json({ message: "onesignalId required" });
+
+    const resp = await fetch(`https://api.onesignal.com/notifications/${onesignalId}?app_id=${ONESIGNAL_APP_ID}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Key ${ONESIGNAL_REST_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!resp.ok) {
+      return res.status(resp.status).json({ message: "Failed to fetch notification from OneSignal" });
+    }
+
+    const data = await resp.json();
+    res.json({
+      id: data.id,
+      recipients: data.recipients,
+      completed_at: data.completed_at,
+      platform_stats: data.platform_stats || {},
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to check notification status", error: err.message });
+  }
+});
+
+// ─── TASK 4: Enhanced History ─────────────────────────────────
 
 router.get("/history", requireAdmin, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
     const offset = (page - 1) * limit;
+    const categoryFilter = req.query.category || null;
 
-    const { data, error, count } = await supabase
+    let query = supabase
       .from("notification_history")
       .select("*, members!sent_by(name)", { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
+
+    if (categoryFilter) {
+      query = query.eq("category", categoryFilter);
+    }
+
+    const { data, error, count } = await query;
 
     if (error) return res.status(500).json({ message: "Failed to fetch history" });
     res.json({ data, total: count || 0, page, limit });
@@ -157,7 +495,7 @@ router.delete("/history", requireAdmin, async (_req, res) => {
   try {
     const { count, error } = await supabase.from("notification_history").delete().neq("id", 0).select("id");
     if (error) return res.status(500).json({ success: false, message: "Failed to clear history", error: error.message });
-    console.log(`[OneSignal] Admin cleared ${count || 0} notification history records`);
+    console.log(`[OneSignal] Admin cleared ${count || 0} history records`);
     res.json({ success: true, deleted: count || 0 });
   } catch (err) {
     console.error("[OneSignal] Clear history error:", err.message);
@@ -165,32 +503,340 @@ router.delete("/history", requireAdmin, async (_req, res) => {
   }
 });
 
+// ─── TASK 9: Enhanced Stats ───────────────────────────────────
+
 router.get("/stats", requireAdmin, async (_req, res) => {
   try {
     const { data: members, error: membersError } = await supabase
-      .from("members").select("id");
+      .from("members").select("id, google_id, push_platform, push_browser, push_last_seen, enabled");
 
     if (membersError) return res.status(500).json({ message: "Failed to fetch stats" });
 
     const totalMembers = members?.length || 0;
+    const enabledMembers = members?.filter((m) => m.enabled === 1) || members || [];
+    const membersWithGoogle = enabledMembers.filter((m) => m.google_id).length;
+    const membersWithoutGoogle = enabledMembers.length - membersWithGoogle;
+
+    const platforms = {};
+    const browsers = {};
+    enabledMembers.forEach((m) => {
+      if (m.push_platform) {
+        platforms[m.push_platform] = (platforms[m.push_platform] || 0) + 1;
+      }
+      if (m.push_browser) {
+        browsers[m.push_browser] = (browsers[m.push_browser] || 0) + 1;
+      }
+    });
 
     const { count: historyCount } = await supabase
       .from("notification_history").select("id", { count: "exact", head: true });
 
-    const { data: recentHistory } = await supabase
-      .from("notification_history").select("sent_count").order("created_at", { ascending: false }).limit(100);
+    const { data: allHistory } = await supabase
+      .from("notification_history")
+      .select("sent_count, delivered_count, opened_count, clicked_count, failed_count, error, category, status")
+      .order("created_at", { ascending: false })
+      .limit(500);
 
-    const totalDelivered = (recentHistory || []).reduce((sum, h) => sum + (h.sent_count || 0), 0);
+    const totalSent = (allHistory || []).reduce((s, h) => s + (h.sent_count || 0), 0);
+    const totalDelivered = (allHistory || []).reduce((s, h) => s + (h.delivered_count || 0), 0);
+    const totalOpened = (allHistory || []).reduce((s, h) => s + (h.opened_count || 0), 0);
+    const totalClicked = (allHistory || []).reduce((s, h) => s + (h.clicked_count || 0), 0);
+    const totalFailed = (allHistory || []).reduce((s, h) => s + (h.failed_count || 0), 0);
+    const failedNotifications = (allHistory || []).filter((h) => h.error).length;
+
+    // Category breakdown
+    const categoryStats = {};
+    (allHistory || []).forEach((h) => {
+      const cat = h.category || "general";
+      if (!categoryStats[cat]) categoryStats[cat] = { sent: 0, delivered: 0, opened: 0, clicked: 0, failed: 0, count: 0 };
+      categoryStats[cat].sent += h.sent_count || 0;
+      categoryStats[cat].delivered += h.delivered_count || 0;
+      categoryStats[cat].opened += h.opened_count || 0;
+      categoryStats[cat].clicked += h.clicked_count || 0;
+      categoryStats[cat].failed += h.failed_count || 0;
+      categoryStats[cat].count += 1;
+    });
+
+    // Status breakdown
+    const statusCounts = {};
+    (allHistory || []).forEach((h) => {
+      const st = h.status || "sent";
+      statusCounts[st] = (statusCounts[st] || 0) + 1;
+    });
 
     res.json({
       totalMembers,
-      membersWithPush: totalMembers,
-      membersWithoutPush: 0,
+      membersWithGoogle,
+      membersWithoutGoogle,
       totalNotificationsSent: historyCount || 0,
+      totalSent,
       totalDelivered,
+      totalOpened,
+      totalClicked,
+      totalFailed,
+      failedNotifications,
+      deliveryRate: totalSent > 0 ? ((totalDelivered / totalSent) * 100).toFixed(1) : "0",
+      openRate: totalDelivered > 0 ? ((totalOpened / totalDelivered) * 100).toFixed(1) : "0",
+      clickRate: totalOpened > 0 ? ((totalClicked / totalOpened) * 100).toFixed(1) : "0",
+      platforms,
+      browsers,
+      categoryStats,
+      statusCounts,
     });
   } catch {
     res.status(500).json({ message: "Failed to fetch stats" });
+  }
+});
+
+// ─── TASK 5: User Notification Inbox ──────────────────────────
+
+function logSupabaseError(context, error) {
+  console.error(`[OneSignal] ${context}:`, JSON.stringify({
+    message: error?.message || "unknown",
+    code: error?.code || "unknown",
+    details: error?.details || null,
+    hint: error?.hint || null,
+  }));
+}
+
+router.get("/inbox", auth, async (req, res) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ success: false, error: "Invalid token payload", details: "User ID missing from JWT" });
+    }
+
+    if (!supabase) {
+      return res.status(500).json({ success: false, error: "Supabase not configured", details: "Missing SUPABASE_URL or SUPABASE_SECRET_KEY" });
+    }
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    const offset = (page - 1) * limit;
+    const unreadOnly = req.query.unread === "true";
+    const categoryFilter = req.query.category || null;
+    const memberId = Number(req.user.id);
+
+    if (isNaN(memberId) || memberId <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid user ID", details: `Got: ${req.user.id}` });
+    }
+
+    let query = supabase
+      .from("user_notifications")
+      .select("*", { count: "exact" })
+      .eq("member_id", memberId)
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (unreadOnly) query = query.eq("read", false);
+    if (categoryFilter) query = query.eq("category", categoryFilter);
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      logSupabaseError("Inbox query failed", error);
+      return res.status(500).json({
+        success: false,
+        error: error.message || "Failed to fetch notifications",
+        details: error.details || null,
+        hint: error.hint || null,
+        code: error.code || null,
+      });
+    }
+
+    let unreadCount = 0;
+    const unreadResult = await supabase
+      .from("user_notifications")
+      .select("id", { count: "exact", head: true })
+      .eq("member_id", memberId)
+      .eq("read", false);
+
+    if (unreadResult.error) {
+      logSupabaseError("Unread count query failed", unreadResult.error);
+    } else {
+      unreadCount = unreadResult.count || 0;
+    }
+
+    res.json({
+      success: true,
+      data: data || [],
+      total: count || 0,
+      unreadCount,
+      page,
+      limit,
+    });
+  } catch (err) {
+    console.error("[OneSignal] Inbox exception:", err.message, err.stack);
+    res.status(500).json({
+      success: false,
+      error: err.message || "Internal server error",
+      details: "Unhandled exception in inbox endpoint",
+    });
+  }
+});
+
+router.put("/inbox/read-all", auth, async (req, res) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ success: false, error: "Invalid token payload" });
+    }
+    if (!supabase) {
+      return res.status(500).json({ success: false, error: "Supabase not configured" });
+    }
+
+    const memberId = Number(req.user.id);
+    const { error } = await supabase
+      .from("user_notifications")
+      .update({ read: true })
+      .eq("member_id", memberId)
+      .eq("read", false);
+
+    if (error) {
+      logSupabaseError("Mark all read failed", error);
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+        details: error.details || null,
+        hint: error.hint || null,
+        code: error.code || null,
+      });
+    }
+    res.json({ success: true, message: "All notifications marked as read" });
+  } catch (err) {
+    console.error("[OneSignal] Mark-all-read exception:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.put("/inbox/:id/read", auth, async (req, res) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ success: false, error: "Invalid token payload" });
+    }
+    if (!supabase) {
+      return res.status(500).json({ success: false, error: "Supabase not configured" });
+    }
+
+    const notifId = parseInt(req.params.id);
+    if (isNaN(notifId) || notifId <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid notification ID" });
+    }
+
+    const { error } = await supabase
+      .from("user_notifications")
+      .update({ read: true })
+      .eq("id", notifId)
+      .eq("member_id", Number(req.user.id));
+
+    if (error) {
+      logSupabaseError("Mark single read failed", error);
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+        details: error.details || null,
+        hint: error.hint || null,
+        code: error.code || null,
+      });
+    }
+    res.json({ success: true, message: "Notification marked as read" });
+  } catch (err) {
+    console.error("[OneSignal] Mark-read exception:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.delete("/inbox/:id", auth, async (req, res) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ success: false, error: "Invalid token payload" });
+    }
+    if (!supabase) {
+      return res.status(500).json({ success: false, error: "Supabase not configured" });
+    }
+
+    const notifId = parseInt(req.params.id);
+    if (isNaN(notifId) || notifId <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid notification ID" });
+    }
+
+    const { error } = await supabase
+      .from("user_notifications")
+      .delete()
+      .eq("id", notifId)
+      .eq("member_id", Number(req.user.id));
+
+    if (error) {
+      logSupabaseError("Delete notification failed", error);
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+        details: error.details || null,
+        hint: error.hint || null,
+        code: error.code || null,
+      });
+    }
+    res.json({ success: true, message: "Notification deleted" });
+  } catch (err) {
+    console.error("[OneSignal] Delete notification exception:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── Diagnostics ──────────────────────────────────────────────
+
+router.get("/diagnostics", auth, async (req, res) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ success: false, error: "Invalid token payload" });
+    }
+    if (!supabase) {
+      return res.status(500).json({ success: false, error: "Supabase not configured" });
+    }
+
+    const { data: member, error: memberError } = await supabase
+      .from("members")
+      .select("id, google_id, google_email, google_name, google_verified, google_linked, google_linked_at, onesignal_id, onesignal_user_id, push_browser, push_platform, push_language, push_timezone, push_last_seen")
+      .eq("id", req.user.id)
+      .single();
+
+    if (memberError) {
+      console.error("[ONESIGNAL] Diagnostics member query failed:", memberError.message);
+    }
+
+    const { data: devices, error: devicesError } = await supabase
+      .from("notification_devices")
+      .select("id, onesignal_subscription_id, onesignal_user_id, browser, platform, language, timezone, user_agent, last_seen, active, google_id, created_at, updated_at")
+      .eq("member_id", req.user.id)
+      .order("last_seen", { ascending: false });
+
+    if (devicesError) {
+      console.error("[ONESIGNAL] Diagnostics devices query failed:", devicesError.message);
+    }
+
+    res.json({
+      success: true,
+      backend: getConfig(),
+      user: member ? {
+        id: member.id,
+        googleId: member.google_id,
+        googleEmail: member.google_email,
+        googleName: member.google_name,
+        googleVerified: member.google_verified,
+        googleLinked: member.google_linked,
+        googleLinkedAt: member.google_linked_at,
+        onesignalId: member.onesignal_id,
+        onesignalUserId: member.onesignal_user_id,
+        browser: member.push_browser,
+        platform: member.push_platform,
+        language: member.push_language,
+        timezone: member.push_timezone,
+        lastSeen: member.push_last_seen,
+      } : null,
+      devices: devices || [],
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error("[ONESIGNAL] Diagnostics exception:", err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

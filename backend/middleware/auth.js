@@ -35,7 +35,7 @@ export default function auth(req, res, next) {
     next();
   } catch (err) {
     const reason = err.name === "TokenExpiredError" ? "expired" : err.name === "JsonWebTokenError" ? "invalid" : err.message;
-    console.warn(`[Auth] 401 ${reason} — ${req.method} ${req.originalUrl} — token starts with: ${token.substring(0, 16)}...`);
+    console.warn(`[Auth] 401 ${reason} — ${req.method} ${req.originalUrl}`);
     res.status(401).json({ message: "Invalid token", reason });
   }
 }
