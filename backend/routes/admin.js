@@ -226,14 +226,19 @@ router.put("/events/:id/location", requireAdmin, async (req, res) => {
 router.put("/events/:id", requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ message: "Server configuration error: database not connected" });
-    const { title, date, latitude, longitude, radius, attendance_points } = req.body;
+    const { title, date, end_date, latitude, longitude, radius, attendance_points } = req.body;
     const update = {};
     if (title !== undefined) update.title = (title || "").trim().slice(0, 200);
     if (date !== undefined) update.date = date;
+    if (end_date !== undefined) update.end_date = end_date ? end_date : null;
     if (latitude !== undefined) update.latitude = latitude !== "" ? parseFloat(latitude) : null;
     if (longitude !== undefined) update.longitude = longitude !== "" ? parseFloat(longitude) : null;
     if (radius !== undefined) update.radius = parseInt(radius) || 100;
     if (attendance_points !== undefined) update.attendance_points = parseInt(attendance_points) || 0;
+
+    if (update.date && update.end_date && new Date(update.end_date) < new Date(update.date)) {
+      return res.status(400).json({ message: "End date must be on or after the start date" });
+    }
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ message: "No fields to update" });
@@ -243,7 +248,7 @@ router.put("/events/:id", requireAdmin, async (req, res) => {
       .from("events")
       .update(update)
       .eq("id", req.params.id)
-      .select("id, title, date, event_code, latitude, longitude, radius, attendance_points")
+      .select("id, title, date, end_date, event_code, latitude, longitude, radius, attendance_points")
       .single();
     if (error) {
       return res.status(500).json({ message: "Failed to update event" });

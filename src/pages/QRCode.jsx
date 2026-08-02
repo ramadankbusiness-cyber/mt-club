@@ -4,6 +4,7 @@ import Header from "../components/Header";
 import axios from "../utils/axios";
 import { QRCodeCanvas } from "qrcode.react";
 import { useToast } from "../components/Toast";
+import { formatEventDate } from "../utils/eventDates";
 
 export default function QRCodePage() {
   const { user } = useContext(AuthContext);
@@ -75,7 +76,7 @@ export default function QRCodePage() {
                     <option value="">-- Choose an event --</option>
                     {Array.isArray(events) && events.map((ev) => (
                       <option key={ev.id} value={ev.id}>
-                        {ev.title} — {ev.date?.slice?.(0, 10) || ev.date}
+                        {ev.title} — {formatEventDate(ev)}
                       </option>
                     ))}
                   </select>

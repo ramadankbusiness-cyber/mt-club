@@ -8,12 +8,13 @@ import EmptyState from "../components/EmptyState";
 import SkeletonLoader from "../components/SkeletonLoader";
 import { CalendarPlus } from "lucide-react";
 import { useDebounce } from "../hooks/useDebounce";
+import { formatEventDate } from "../utils/eventDates";
 
 export default function Events({ onLoaded }) {
   const { user } = useContext(AuthContext);
   const toast = useToast();
   const [showModal, setShowModal] = useState(false);
-  const [newEvent, setNewEvent] = useState({ title: "", description: "", date: "", attendance_points: 2 });
+  const [newEvent, setNewEvent] = useState({ title: "", description: "", date: "", end_date: "", attendance_points: 2 });
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState("");
   const [geoLoading, setGeoLoading] = useState(false);
@@ -60,11 +61,16 @@ export default function Events({ onLoaded }) {
 
   const handleAddEvent = async () => {
     if (!newEvent.title || !newEvent.date || !file) return;
+    if (newEvent.end_date && newEvent.end_date < newEvent.date) {
+      toast.error("End date must be on or after the start date.");
+      return;
+    }
 
     const fd = new FormData();
     fd.append("title", newEvent.title);
     fd.append("description", newEvent.description);
     fd.append("date", newEvent.date);
+    if (newEvent.end_date) fd.append("end_date", newEvent.end_date);
     fd.append("image", file);
     if (eventLocation.latitude != null) fd.append("latitude", eventLocation.latitude);
     if (eventLocation.longitude != null) fd.append("longitude", eventLocation.longitude);
@@ -78,10 +84,13 @@ export default function Events({ onLoaded }) {
         body: fd
       });
 
-      if (!res.ok) throw new Error("Failed to add event");
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || "Failed to add event");
+      }
 
       const data = await res.json();
-      setNewEvent({ title: "", description: "", date: "", attendance_points: 2 });
+      setNewEvent({ title: "", description: "", date: "", end_date: "", attendance_points: 2 });
       setFile(null);
       setPreview("");
       setEventLocation({ latitude: null, longitude: null });
@@ -89,7 +98,7 @@ export default function Events({ onLoaded }) {
       setShowModal(false);
       refresh();
     } catch (err) {
-      toast.error("Failed to add event. Please try again.");
+      toast.error(err.message || "Failed to add event. Please try again.");
     }
   };
 
@@ -99,18 +108,19 @@ export default function Events({ onLoaded }) {
         const matchesSearch = title.includes(debouncedSearch.toLowerCase());
 
         const eventDate = new Date(event.date);
+        const eventEnd = event.end_date ? new Date(event.end_date) : eventDate;
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
         let matchesFilter = true;
         if (activeFilter === "Upcoming") {
-          matchesFilter = eventDate >= today;
+          matchesFilter = eventEnd >= today;
         } else if (activeFilter === "Completed") {
-          matchesFilter = eventDate < today;
+          matchesFilter = eventEnd < today;
         } else if (activeFilter === "This Month") {
           matchesFilter =
-            eventDate.getMonth() === today.getMonth() &&
-            eventDate.getFullYear() === today.getFullYear();
+            (eventDate.getMonth() === today.getMonth() && eventDate.getFullYear() === today.getFullYear()) ||
+            (eventEnd.getMonth() === today.getMonth() && eventEnd.getFullYear() === today.getFullYear());
         }
 
         return matchesSearch && matchesFilter;
@@ -186,7 +196,7 @@ export default function Events({ onLoaded }) {
                 />
                 <div className="p-5">
                   <h3 className="text-xl font-bold mb-2">{event.title}</h3>
-                  <p className="text-gray-300 mb-1">{event.date?.slice?.(0, 10) || event.date}</p>
+                  <p className="text-gray-300 mb-1">{formatEventDate(event)}</p>
                   {event.latitude != null && event.longitude != null && (
                     <p className="text-xs text-cyan-400 mb-3 flex items-center gap-1">
                       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
@@ -238,6 +248,15 @@ export default function Events({ onLoaded }) {
               onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })}
               className="input-premium mb-3 [color-scheme:dark]"
             />
+            <input
+              type="date"
+              value={newEvent.end_date}
+              onChange={(e) => setNewEvent({ ...newEvent, end_date: e.target.value })}
+              className="input-premium mb-3 [color-scheme:dark]"
+              title="End date (optional) — leave empty for a single-day event"
+              placeholder="End date (optional)"
+            />
+            <p className="text-xs text-gray-400 -mt-2 mb-3">End date optional — leave empty for a single-day event.</p>
             <input
               type="number"
               min="0"

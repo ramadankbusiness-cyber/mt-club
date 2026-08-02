@@ -7,6 +7,7 @@ import axios from "../utils/axios";
 import { QRCodeCanvas } from "qrcode.react";
 import * as XLSX from "xlsx-js-style";
 import { useToast } from "../components/Toast";
+import { formatEventDate } from "../utils/eventDates";
 
 const PLATFORM_ICONS = { facebook: <FaFacebook />, instagram: <FaInstagram />, tiktok: <FaTiktok /> };
 
@@ -725,7 +726,7 @@ export default function AdminPanel() {
                 className="w-full p-3 rounded-lg bg-white/10 text-white border border-white/20 [color-scheme:dark]">
                 <option value="">-- Choose Event --</option>
                 {events.map(ev => (
-                  <option key={ev.id} value={ev.id}>{ev.title} — {ev.date?.slice?.(0, 10) || ev.date}</option>
+                  <option key={ev.id} value={ev.id}>{ev.title} — {formatEventDate(ev)}</option>
                 ))}
               </select>
             )}
@@ -779,7 +780,7 @@ export default function AdminPanel() {
     const [locEdit, setLocEdit] = useState({});
     const [deletingEventId, setDeletingEventId] = useState(null);
     const [editingEvent, setEditingEvent] = useState(null);
-    const [eventEditForm, setEventEditForm] = useState({ title: "", date: "", latitude: "", longitude: "", radius: 100, attendance_points: 2 });
+    const [eventEditForm, setEventEditForm] = useState({ title: "", date: "", end_date: "", latitude: "", longitude: "", radius: 100, attendance_points: 2 });
     const [editingRecord, setEditingRecord] = useState(null);
     const [editForm, setEditForm] = useState({ inside_zone: null, timestamp: "" });
     const [deletingRecordId, setDeletingRecordId] = useState(null);
@@ -857,6 +858,7 @@ export default function AdminPanel() {
       setEventEditForm({
         title: ev.title || "",
         date: ev.date ? ev.date.slice(0, 10) : "",
+        end_date: ev.end_date ? ev.end_date.slice(0, 10) : "",
         latitude: ev.latitude ?? "",
         longitude: ev.longitude ?? "",
         radius: ev.radius ?? 100,
@@ -870,6 +872,7 @@ export default function AdminPanel() {
         const res = await axios.put(`/api/admin/events/${editingEvent.id}`, {
           title: eventEditForm.title,
           date: eventEditForm.date || null,
+          end_date: eventEditForm.end_date || null,
           latitude: eventEditForm.latitude,
           longitude: eventEditForm.longitude,
           radius: parseInt(eventEditForm.radius) || 100,
@@ -1018,6 +1021,13 @@ export default function AdminPanel() {
                     onChange={e => setEventEditForm({ ...eventEditForm, date: e.target.value })}
                     className="w-full bg-white/10 border border-white/20 p-2 rounded text-white text-sm" />
                 </div>
+                <div>
+                  <label className="text-xs text-gray-400 mb-1 block">End Date (optional)</label>
+                  <input type="date" value={eventEditForm.end_date}
+                    onChange={e => setEventEditForm({ ...eventEditForm, end_date: e.target.value })}
+                    className="w-full bg-white/10 border border-white/20 p-2 rounded text-white text-sm" />
+                  <p className="text-[11px] text-gray-500 mt-1">Leave empty for a single-day event.</p>
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs text-gray-400 mb-1 block">Latitude</label>
@@ -1165,7 +1175,7 @@ export default function AdminPanel() {
                       </div>
                     )}
                   </div>
-                  <p className="text-xs text-gray-400">{ev.date?.slice?.(0, 10) || "No date"}</p>
+                  <p className="text-xs text-gray-400">{formatEventDate(ev)}</p>
 
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <Calendar size={14} />

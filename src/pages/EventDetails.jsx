@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { Calendar, MapPin, ArrowLeft, Clock, Users, ExternalLink } from "lucide-react";
 import { Link } from "react-router-dom";
+import { formatEventDate } from "../utils/eventDates";
 
 export default function EventDetails({ onLoaded }) {
   const { id } = useParams();
@@ -58,7 +59,7 @@ export default function EventDetails({ onLoaded }) {
         <div className="flex flex-wrap items-center gap-4 text-sm text-gray-400 mb-6">
           <span className="flex items-center gap-1.5">
             <Calendar size={14} className="text-cyan-400" />
-            {event.date?.slice?.(0, 10) || event.date}
+            {formatEventDate(event)}
           </span>
           {event.latitude != null && event.longitude != null && (
             <span className="flex items-center gap-1.5">
