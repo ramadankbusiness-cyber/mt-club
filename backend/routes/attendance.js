@@ -25,6 +25,18 @@ router.post("/", requireMember, async (req, res) => {
   }
   const actualMemberId = req.user.id;
 
+  const hasCoords = latitude !== undefined && latitude !== null && latitude !== "" &&
+                    longitude !== undefined && longitude !== null && longitude !== "";
+  let lat = null;
+  let lon = null;
+  if (hasCoords) {
+    lat = parseFloat(latitude);
+    lon = parseFloat(longitude);
+    if (!isFinite(lat) || lat < -90 || lat > 90 || !isFinite(lon) || lon < -180 || lon > 180) {
+      return res.status(400).json({ message: "Invalid latitude or longitude" });
+    }
+  }
+
   try {
     let query = supabase.from("events").select("*");
     if (eventId) {
@@ -41,13 +53,25 @@ router.post("/", requireMember, async (req, res) => {
       return res.status(404).json({ message: "Event not found" });
     }
 
-    if (event.latitude != null && event.longitude != null && latitude != null && longitude != null) {
-      const dist = haversineDistance(latitude, longitude, event.latitude, event.longitude);
+    if (event.is_active === false) {
+      return res.status(403).json({ message: "Event is not active for check-in" });
+    }
+
+    const hasEventLocation = event.latitude != null && event.longitude != null;
+    if (hasEventLocation && !hasCoords) {
+      return res.status(400).json({ message: "Latitude and longitude are required for this event" });
+    }
+
+    let distance = null;
+    let insideZone = null;
+    if (hasEventLocation && hasCoords) {
       const radius = event.radius || 100;
-      if (dist > radius) {
+      distance = haversineDistance(lat, lon, event.latitude, event.longitude);
+      insideZone = distance <= radius;
+      if (!insideZone) {
         return res.status(403).json({
-          message: `You are ${Math.round(dist)}m away from the event. Must be within ${radius}m.`,
-          distance: Math.round(dist),
+          message: `You are ${Math.round(distance)}m away from the event location. Must be within ${radius}m.`,
+          distance: Math.round(distance),
           radius,
         });
       }
@@ -62,35 +86,23 @@ router.post("/", requireMember, async (req, res) => {
 
     if (existing) return res.status(409).json({ message: "Already registered for this event" });
 
-    let insideZone = null;
-    if (event.latitude != null && event.longitude != null && latitude != null && longitude != null) {
-      const dist = haversineDistance(latitude, longitude, event.latitude, event.longitude);
-      const radius = event.radius || 100;
-      insideZone = dist <= radius;
+    const insertPayload = {
+      member_id: actualMemberId,
+      event_id: event.id,
+      location: (location || "Unknown").slice(0, 255),
+    };
+    if (insideZone !== null) {
+      insertPayload.inside_zone = insideZone;
     }
 
     const { data: inserted, error: insertErr } = await supabase
       .from("attendance")
-      .insert({
-        member_id: actualMemberId,
-        event_id: event.id,
-        location: (location || "Unknown").slice(0, 255),
-      })
+      .insert(insertPayload)
       .select("id")
       .single();
 
     if (insertErr) {
       return res.status(500).json({ message: "Failed to register attendance" });
-    }
-
-    if (insideZone !== null) {
-      const { error: updateErr } = await supabase
-        .from("attendance")
-        .update({ inside_zone: insideZone })
-        .eq("id", inserted.id);
-      if (updateErr && updateErr.code !== "42703") {
-        // inside_zone column may not exist yet — ignore
-      }
     }
 
     const pointsToAward = 2;
@@ -103,6 +115,80 @@ router.post("/", requireMember, async (req, res) => {
     res.json({ message: `Attendance registered for ${event?.title || "event"}`, pointsAwarded: pointsToAward, newBalance });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+});
+
+// Zone check-in status (members): tells the app if the user is inside the active
+// event's location radius and whether they've already checked in.
+// The event's OWN latitude/longitude/radius are the attendance zone.
+router.get("/zone/status", requireMember, async (req, res) => {
+  const latitude = req.query.latitude !== undefined ? parseFloat(req.query.latitude) : NaN;
+  const longitude = req.query.longitude !== undefined ? parseFloat(req.query.longitude) : NaN;
+
+  if (!isFinite(latitude) || latitude < -90 || latitude > 90 ||
+      !isFinite(longitude) || longitude < -180 || longitude > 180) {
+    return res.status(400).json({ message: "Invalid latitude or longitude" });
+  }
+
+  try {
+    const { data: activeEvent, error: eventErr } = await supabase
+      .from("events")
+      .select("*")
+      .eq("is_active", true)
+      .order("date", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    let event = activeEvent;
+    if (eventErr && (eventErr.code === "42703" || eventErr.message?.includes("is_active"))) {
+      const { data: fallback, error: fallbackErr } = await supabase
+        .from("events")
+        .select("*")
+        .not("latitude", "is", null)
+        .order("date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (fallbackErr) {
+        return res.status(500).json({ message: "Failed to fetch zone status" });
+      }
+      event = fallback;
+    } else if (eventErr) {
+      return res.status(500).json({ message: "Failed to fetch zone status" });
+    }
+
+    if (!event || event.latitude == null || event.longitude == null) {
+      return res.json({ event: null, inside: false, distance: null, alreadyCheckedIn: false });
+    }
+
+    const radius = event.radius || 100;
+    const distance = haversineDistance(latitude, longitude, event.latitude, event.longitude);
+    const inside = distance <= radius;
+
+    let alreadyCheckedIn = false;
+    const { data: myAttendance } = await supabase
+      .from("attendance")
+      .select("id")
+      .eq("member_id", req.user.id)
+      .eq("event_id", event.id)
+      .maybeSingle();
+    alreadyCheckedIn = !!(myAttendance && myAttendance.id);
+
+    res.json({
+      event: {
+        id: event.id,
+        title: event.title,
+        date: event.date,
+        image: event.image || "",
+        latitude: event.latitude,
+        longitude: event.longitude,
+        radius,
+      },
+      inside,
+      distance: Math.round(distance),
+      alreadyCheckedIn,
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch zone status" });
   }
 });
 

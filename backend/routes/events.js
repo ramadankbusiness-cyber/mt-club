@@ -81,7 +81,7 @@ router.post("/", requireAdmin, (req, res) => {
       return res.status(400).json({ message: "Upload failed" });
     }
 
-    const { title, description, date, end_date, latitude, longitude, radius, attendance_points } = req.body;
+    const { title, description, date, end_date, latitude, longitude, radius, attendance_points, is_active } = req.body;
     const sanitizedTitle = (title || "").trim().slice(0, 200);
     if (!sanitizedTitle) return res.status(400).json({ message: "Title is required" });
 
@@ -121,6 +121,7 @@ router.post("/", requireAdmin, (req, res) => {
       longitude: longitude ? parseFloat(longitude) : null,
       radius: radius ? parseInt(radius) : 100,
       attendance_points: attendance_points ? parseInt(attendance_points) : 2,
+      is_active: is_active === undefined ? true : (is_active === true || is_active === "true"),
     };
 
     console.log(`[Events] Step 3/6 — inserting event | payload: ${JSON.stringify(payload)}`);
