@@ -20,7 +20,17 @@ const mockQuery = {
 };
 
 vi.mock("../../config/supabase.js", () => ({
-  supabase: { from: vi.fn(() => mockQuery) },
+  supabase: {
+    from: vi.fn(() => mockQuery),
+    storage: {
+      from: vi.fn(() => ({
+        createSignedUploadUrl: vi.fn().mockResolvedValue({
+          data: { signedUrl: "https://signed.example.com/upload?token=abc", token: "abc", path: "events/x.png" },
+          error: null,
+        }),
+      })),
+    },
+  },
 }));
 vi.mock("../../utils/storage.js", () => ({
   createMulter: vi.fn(() => ({ single: () => (req, res, next) => next() })),
@@ -104,6 +114,65 @@ describe("Events Routes", () => {
         .send({ title: "New Event", description: "A test event" });
       expect(res.status).toBe(200);
       expect(res.body.id).toBe(1);
+    });
+
+    it("stores image URL from JSON body", async () => {
+      const recorder = vi.fn();
+      supabase.from.mockImplementation((table) => {
+        const chain = { ...mockQuery, _data: { id: 7, image: "https://supabase.example.com/events/e.png" } };
+        chain.insert = (payload) => { recorder(payload); return chain; };
+        return chain;
+      });
+
+      const res = await request(app)
+        .post("/api/events/")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({
+          title: "Event with image",
+          date: "2026-12-01",
+          image: "https://supabase.example.com/events/e.png",
+          latitude: 30.5,
+          longitude: 31.2,
+          radius: "150",
+          attendance_points: "3",
+        });
+      expect(res.status).toBe(200);
+      expect(recorder).toHaveBeenCalledWith(expect.objectContaining({
+        title: "Event with image",
+        image: "https://supabase.example.com/events/e.png",
+        latitude: 30.5,
+        longitude: 31.2,
+        radius: 150,
+        attendance_points: 3,
+      }));
+    });
+  });
+
+  describe("POST /api/events/upload-sign", () => {
+    it("requires admin auth", async () => {
+      const res = await request(app)
+        .post("/api/events/upload-sign")
+        .send({ filename: "photo.jpg" });
+      expect(res.status).toBe(401);
+    });
+
+    it("returns signed URL and public URL for admin", async () => {
+      const res = await request(app)
+        .post("/api/events/upload-sign")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ filename: "my-photo.jpg" });
+      expect(res.status).toBe(200);
+      expect(res.body.signedUrl).toBe("https://signed.example.com/upload?token=abc");
+      expect(res.body.publicUrl).toBe("https://storage.example.com/event.jpg");
+      expect(res.body.path).toMatch(/^events\/event-\d+-[a-z0-9]+\.jpg$/);
+    });
+
+    it("rejects missing filename", async () => {
+      const res = await request(app)
+        .post("/api/events/upload-sign")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({});
+      expect(res.status).toBe(400);
     });
   });
 });

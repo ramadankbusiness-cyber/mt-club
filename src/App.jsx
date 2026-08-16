@@ -51,6 +51,7 @@ function AppFallback() {
 function AppContent() {
   const { showAuth, user, googleLinked, markGoogleLinked } = useContext(AuthContext);
   const [loaded, setLoaded] = useState(false);
+  const [linkModalDismissed, setLinkModalDismissed] = useState(false);
   const handleLoaded = useCallback(() => setLoaded(true), []);
   useNativeInit();
 
@@ -83,7 +84,7 @@ function AppContent() {
     markGoogleLinked(data.googleSub);
   }, [markGoogleLinked]);
 
-  const showLinkModal = user && !googleLinked;
+  const showLinkModal = user && !googleLinked && !linkModalDismissed;
 
   return (
     <ErrorBoundary>
@@ -133,7 +134,12 @@ function AppContent() {
       </div>
 
       {showLinkModal && (
-        <GoogleLinkModal visible={showLinkModal} user={user} onLinked={handleGoogleLinked} />
+        <GoogleLinkModal
+          visible={showLinkModal}
+          user={user}
+          onLinked={handleGoogleLinked}
+          onDismiss={() => setLinkModalDismissed(true)}
+        />
       )}
 
       <NotificationPermissionModal

@@ -3,7 +3,7 @@ import axios from "../utils/axios";
 import GoogleButton from "./GoogleButton";
 import { isGoogleConfigured } from "../services/googleAuth";
 
-export default function GoogleLinkModal({ visible, user, onLinked }) {
+export default function GoogleLinkModal({ visible, user, onLinked, onDismiss }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -142,6 +142,15 @@ export default function GoogleLinkModal({ visible, user, onLinked }) {
                 <p className="text-gray-500 text-sm">Google Identity Services not configured</p>
               )}
             </div>
+
+            {onDismiss && (
+              <button
+                onClick={onDismiss}
+                className="mt-6 w-full py-2 rounded-xl text-sm text-gray-400 hover:text-white hover:bg-white/5 transition"
+              >
+                Continue without linking for now
+              </button>
+            )}
 
             {loading && (
               <p className="text-xs text-gray-400 mt-4" style={{ animation: "pulse 1.5s infinite" }}>

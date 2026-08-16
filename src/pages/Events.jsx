@@ -34,6 +34,7 @@ export default function Events({ onLoaded }) {
 
   const handleFileChange = (e) => {
     const f = e.target.files[0];
+    e.target.value = "";
     if (!f) return;
     setFile(f);
     setPreview(URL.createObjectURL(f));
@@ -60,28 +61,62 @@ export default function Events({ onLoaded }) {
   };
 
   const handleAddEvent = async () => {
-    if (!newEvent.title || !newEvent.date || !file) return;
+    if (!newEvent.title || !newEvent.date) {
+      toast.error("Title and date are required.");
+      return;
+    }
     if (newEvent.end_date && newEvent.end_date < newEvent.date) {
       toast.error("End date must be on or after the start date.");
       return;
     }
 
-    const fd = new FormData();
-    fd.append("title", newEvent.title);
-    fd.append("description", newEvent.description);
-    fd.append("date", newEvent.date);
-    if (newEvent.end_date) fd.append("end_date", newEvent.end_date);
-    fd.append("image", file);
-    if (eventLocation.latitude != null) fd.append("latitude", eventLocation.latitude);
-    if (eventLocation.longitude != null) fd.append("longitude", eventLocation.longitude);
-    fd.append("radius", "100");
-    if (newEvent.attendance_points) fd.append("attendance_points", newEvent.attendance_points);
+    let image = "";
+    if (file) {
+      try {
+        const signRes = await fetch("/api/events/upload-sign", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${user?.token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ filename: file.name }),
+        });
+        if (!signRes.ok) throw new Error("Failed to prepare image upload");
+
+        const signData = await signRes.json();
+        const putRes = await fetch(signData.signedUrl, {
+          method: "PUT",
+          headers: { "Content-Type": file.type || "application/octet-stream" },
+          body: file,
+        });
+        if (!putRes.ok) throw new Error("Image upload failed");
+        image = signData.publicUrl;
+      } catch (err) {
+        toast.error(err.message || "Failed to upload image. Please try again.");
+        return;
+      }
+    }
+
+    const payload = {
+      title: newEvent.title,
+      description: newEvent.description,
+      date: newEvent.date,
+      image,
+      radius: "100",
+      attendance_points: newEvent.attendance_points,
+    };
+    if (newEvent.end_date) payload.end_date = newEvent.end_date;
+    if (eventLocation.latitude != null) payload.latitude = eventLocation.latitude;
+    if (eventLocation.longitude != null) payload.longitude = eventLocation.longitude;
 
     try {
       const res = await fetch("/api/events", {
         method: "POST",
-        headers: { "Authorization": `Bearer ${user?.token}` },
-        body: fd
+        headers: {
+          "Authorization": `Bearer ${user?.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {

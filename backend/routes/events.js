@@ -74,6 +74,29 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+router.post("/upload-sign", requireAdmin, async (req, res) => {
+  try {
+    const { filename } = req.body || {};
+    if (!filename || typeof filename !== "string" || !filename.trim()) {
+      return res.status(400).json({ message: "filename is required" });
+    }
+    const ext = path.extname(filename.trim()) || ".jpg";
+    const storedName = `event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+    const objectPath = `events/${storedName}`;
+    const { data, error } = await supabase.storage
+      .from("uploads")
+      .createSignedUploadUrl(objectPath, { upsert: false });
+    if (error || !data?.signedUrl) {
+      logError("POST /api/events/upload-sign — createSignedUploadUrl failed", error);
+      return res.status(500).json({ message: "Failed to prepare image upload" });
+    }
+    res.json({ signedUrl: data.signedUrl, publicUrl: getPublicUrl("uploads", objectPath), path: objectPath });
+  } catch (err) {
+    logError("POST /api/events/upload-sign — exception", err);
+    res.status(500).json({ message: "Failed to prepare image upload" });
+  }
+});
+
 router.post("/", requireAdmin, (req, res) => {
   upload.single("image")(req, res, async (err) => {
     if (err) {
@@ -109,7 +132,11 @@ router.post("/", requireAdmin, (req, res) => {
       }
     }
 
-    const imageUrl = req.file ? getPublicUrl("uploads", `events/${req.file.filename}`) : "";
+    const uploadedImageUrl = req.file ? getPublicUrl("uploads", `events/${req.file.filename}`) : "";
+    const imageUrl =
+      req.body.image && typeof req.body.image === "string"
+        ? req.body.image
+        : uploadedImageUrl;
 
     const payload = {
       title: sanitizedTitle,
