@@ -235,6 +235,18 @@ export async function getSubscribedCount(target, targetValue) {
           .not("google_id", "is", null);
         return count || 0;
       }
+      case "tag": {
+        if (!targetValue) return 0;
+        const [tagKey, ...tagValParts] = targetValue.split("=");
+        const tagValue = tagValParts.join("=");
+        if (!tagKey || !tagValue) return 0;
+        const { count } = await supabase
+          .from("members")
+          .select("id", { count: "exact", head: true })
+          .eq("enabled", 1)
+          .not("google_id", "is", null);
+        return count || 0;
+      }
       default:
         return -1;
     }
@@ -244,57 +256,105 @@ export async function getSubscribedCount(target, targetValue) {
   }
 }
 
-export async function buildUserNotificationRecords({ title, body, category, deepLink, image, target, targetValue, sentBy, notificationHistoryId }) {
-  if (!supabase) return;
+// ─── Resolve target member IDs for INBOX records ─────────────────
+// This queries the MEMBERS table, NOT notification_devices.
+// Every eligible member gets an inbox record regardless of device registration.
+
+export async function resolveTargetMembers(target, targetValue) {
+  if (!supabase) return { memberIds: [], error: "Supabase not configured" };
   try {
     let memberIds = [];
 
     switch (target) {
       case "all": {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from("members")
           .select("id")
           .eq("enabled", 1)
           .not("google_id", "is", null);
+        if (error) throw new Error(`members query failed: ${error.message}`);
         memberIds = (data || []).map((m) => m.id);
         break;
       }
       case "user": {
-        if (targetValue) memberIds = [parseInt(targetValue)];
+        if (!targetValue) break;
+        const memberId = parseInt(targetValue);
+        if (!isNaN(memberId)) memberIds = [memberId];
         break;
       }
       case "multiple_users": {
-        if (targetValue) memberIds = targetValue.split(",").map((s) => parseInt(s.trim())).filter(Boolean);
+        if (!targetValue) break;
+        memberIds = targetValue.split(",").map((s) => parseInt(s.trim())).filter(Boolean);
         break;
       }
       case "committee": {
         if (!targetValue) break;
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from("members")
           .select("id")
           .eq("committee", targetValue)
           .eq("enabled", 1)
           .not("google_id", "is", null);
+        if (error) throw new Error(`committee query failed: ${error.message}`);
         memberIds = (data || []).map((m) => m.id);
         break;
       }
       case "role": {
         if (!targetValue) break;
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from("members")
           .select("id")
           .eq("role", targetValue)
           .eq("enabled", 1)
           .not("google_id", "is", null);
+        if (error) throw new Error(`role query failed: ${error.message}`);
         memberIds = (data || []).map((m) => m.id);
         break;
       }
+      case "tag": {
+        if (!targetValue) break;
+        const [tagKey, ...tagValParts] = targetValue.split("=");
+        const tagValue = tagValParts.join("=");
+        if (!tagKey || !tagValue) break;
+        if (tagKey === "platform") {
+          const { data, error } = await supabase
+            .from("members")
+            .select("id")
+            .eq("enabled", 1)
+            .not("google_id", "is", null);
+          if (error) throw new Error(`members query failed: ${error.message}`);
+          memberIds = (data || []).map((m) => m.id);
+        } else {
+          const { data, error } = await supabase
+            .from("members")
+            .select("id")
+            .eq("enabled", 1)
+            .not("google_id", "is", null);
+          if (error) throw new Error(`members query failed: ${error.message}`);
+          memberIds = (data || []).map((m) => m.id);
+        }
+        break;
+      }
       default:
-        return;
+        break;
     }
 
-    if (memberIds.length === 0 || memberIds.length > 5000) return;
+    memberIds = [...new Set(memberIds)];
+    if (memberIds.length > 5000) memberIds = memberIds.slice(0, 5000);
 
+    console.log(`[NOTIFICATIONS] Resolved ${memberIds.length} members for target="${target}" value="${targetValue}"`);
+    return { memberIds, error: null };
+  } catch (err) {
+    console.error(`[NOTIFICATIONS] resolveTargetMembers error: ${err.message}`);
+    return { memberIds: [], error: err.message };
+  }
+}
+
+// ─── Create inbox records INDEPENDENTLY of push delivery ──────────
+
+export async function createInboxRecords(memberIds, { title, body, category, deepLink, image, notificationHistoryId }) {
+  if (!supabase || !memberIds?.length) return { created: 0, error: null };
+  try {
     const records = memberIds.map((memberId) => ({
       member_id: memberId,
       notification_history_id: notificationHistoryId,
@@ -307,18 +367,132 @@ export async function buildUserNotificationRecords({ title, body, category, deep
       created_at: new Date().toISOString(),
     }));
 
+    let created = 0;
     const batchSize = 500;
     for (let i = 0; i < records.length; i += batchSize) {
       const batch = records.slice(i, i + batchSize);
       const { error } = await supabase.from("user_notifications").insert(batch);
       if (error) {
-        console.error("[ONESIGNAL] user_notifications insert error:", error.message);
+        console.error(`[NOTIFICATIONS] user_notifications insert error: ${error.message}`);
+        return { created, error: error.message };
+      }
+      created += batch.length;
+    }
+
+    console.log(`[NOTIFICATIONS] Created ${created} inbox records (historyId=${notificationHistoryId})`);
+    return { created, error: null };
+  } catch (err) {
+    console.error(`[NOTIFICATIONS] createInboxRecords error: ${err.message}`);
+    return { created: 0, error: err.message };
+  }
+}
+
+// ─── Send push via OneSignal INDEPENDENTLY ───────────────────────
+// Returns { sent, error, onesignalId }. Does NOT record history.
+
+export async function sendPushViaOneSignal(target, targetValue, options) {
+  if (!ONESIGNAL_APP_ID || !ONESIGNAL_REST_API_KEY) {
+    const msg = "OneSignal not configured: missing ONESIGNAL_APP_ID or ONESIGNAL_REST_API_KEY";
+    console.error(`[NOTIFICATIONS] ${msg}`);
+    return { sent: 0, error: msg, onesignalId: null };
+  }
+
+  try {
+    const payload = buildPayload(options);
+    payload.target_channel = "push";
+
+    switch (target) {
+      case "all":
+        payload.included_segments = ["Subscribed Users"];
+        break;
+
+      case "user": {
+        if (!targetValue) return { sent: 0, error: "targetValue required", onesignalId: null };
+        const googleSub = await getGoogleIdForMember(parseInt(targetValue));
+        if (!googleSub) return { sent: 0, error: "Target user has no linked Google account", onesignalId: null };
+        payload.include_aliases = { external_id: [String(googleSub)] };
         break;
       }
+
+      case "multiple_users": {
+        if (!targetValue) return { sent: 0, error: "targetValue required", onesignalId: null };
+        const ids = targetValue.split(",").map((s) => parseInt(s.trim())).filter(Boolean);
+        if (!ids.length) return { sent: 0, error: "No valid user IDs", onesignalId: null };
+        const { data: members } = await supabase
+          .from("members").select("google_id")
+          .in("id", ids).not("google_id", "is", null);
+        const subs = (members || []).map((m) => m.google_id).filter(Boolean);
+        if (!subs.length) return { sent: 0, error: "No target users have linked Google accounts", onesignalId: null };
+        payload.include_aliases = { external_id: subs.map(String) };
+        break;
+      }
+
+      case "committee": {
+        if (!targetValue) return { sent: 0, error: "targetValue required", onesignalId: null };
+        const { data: members } = await supabase
+          .from("members").select("google_id")
+          .eq("committee", targetValue).eq("enabled", 1).not("google_id", "is", null);
+        const subs = (members || []).map((m) => m.google_id).filter(Boolean);
+        if (!subs.length) return { sent: 0, error: "No eligible members in committee", onesignalId: null };
+        payload.include_aliases = { external_id: subs.map(String) };
+        break;
+      }
+
+      case "role": {
+        if (!targetValue) return { sent: 0, error: "targetValue required", onesignalId: null };
+        const { data: members } = await supabase
+          .from("members").select("google_id")
+          .eq("role", targetValue).eq("enabled", 1).not("google_id", "is", null);
+        const subs = (members || []).map((m) => m.google_id).filter(Boolean);
+        if (!subs.length) return { sent: 0, error: "No eligible members with this role", onesignalId: null };
+        payload.include_aliases = { external_id: subs.map(String) };
+        break;
+      }
+
+      case "tag": {
+        if (!targetValue) return { sent: 0, error: "targetValue required", onesignalId: null };
+        const [tagKey, ...tagValParts] = targetValue.split("=");
+        const tagValue = tagValParts.join("=");
+        if (!tagKey || !tagValue) return { sent: 0, error: "targetValue must be key=value format", onesignalId: null };
+        payload.filters = [{ field: "tag", key: tagKey, relation: "=", value: tagValue }];
+        break;
+      }
+
+      case "external_id": {
+        if (!targetValue) return { sent: 0, error: "targetValue required", onesignalId: null };
+        const extIds = targetValue.split(",").map((s) => s.trim()).filter(Boolean);
+        if (!extIds.length) return { sent: 0, error: "No valid external IDs", onesignalId: null };
+        payload.include_aliases = { external_id: extIds.map(String) };
+        break;
+      }
+
+      case "segment": {
+        if (!targetValue) return { sent: 0, error: "targetValue required", onesignalId: null };
+        payload.included_segments = [targetValue];
+        break;
+      }
+
+      default:
+        payload.included_segments = ["Subscribed Users"];
     }
+
+    console.log(`[NOTIFICATIONS] Push send started | target="${target}" value="${targetValue}" | filters:`, JSON.stringify(payload.filters || payload.included_segments || payload.include_aliases).slice(0, 200));
+    const result = await sendNotification(payload);
+    const sent = result.recipients || 0;
+    console.log(`[NOTIFICATIONS] Push send OK | onesignalId=${result.id} | recipients=${sent}`);
+    return { sent, error: null, onesignalId: result.id };
   } catch (err) {
-    console.error("[ONESIGNAL] buildUserNotificationRecords error:", err.message);
+    console.error(`[NOTIFICATIONS] Push send FAILED: ${err.message}`);
+    return { sent: 0, error: err.message, onesignalId: null };
   }
+}
+
+// ─── Legacy: buildUserNotificationRecords (kept for backward compat) ──
+
+export async function buildUserNotificationRecords({ title, body, category, deepLink, image, target, targetValue, sentBy, notificationHistoryId }) {
+  const { memberIds } = await resolveTargetMembers(target, targetValue);
+  if (!memberIds.length) return;
+  await createInboxRecords(memberIds, { title, body, category, deepLink, image, notificationHistoryId });
 }
 
 export async function sendToAll(options, sentBy) {
@@ -554,4 +728,4 @@ export async function sendToExternalIds(externalIds, options) {
   }
 }
 
-export { getConfig, buildPayload, sendNotification, recordHistory, resolveGoogleIds, getGoogleIdForMember };
+export { getConfig, buildPayload, sendNotification, recordHistory, resolveGoogleIds, getGoogleIdForMember, resolveTargetMembers, createInboxRecords, sendPushViaOneSignal };

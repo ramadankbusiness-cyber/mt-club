@@ -7,6 +7,8 @@ import {
   sendToSegment, sendToRole, sendToTag, sendToExternalIds,
   getConfig, getSubscribedCount, buildUserNotificationRecords,
   getGoogleIdForMember,
+  resolveTargetMembers, createInboxRecords, sendPushViaOneSignal,
+  recordHistory,
 } from "../utils/onesignal.js";
 
 const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID || "";
@@ -128,12 +130,13 @@ router.post("/save-oneSignal-id", auth, async (req, res) => {
   }
 });
 
-// ─── TASK 3 + 8: Improved Send with Validation + Permission Check ──
+// ─── SEND NOTIFICATION ──────────────────────────────────────────
+// Flow: resolve members → create inbox records (ALWAYS) → attempt push (separate) → return stats
 
 router.post("/send", requireLeaderOrAdmin, async (req, res) => {
   try {
     if (!supabase) {
-      console.error("[ONESIGNAL] send: Supabase client not configured");
+      console.error("[NOTIFICATIONS] send: Supabase client not configured");
       return res.status(503).json({ message: "Database not available" });
     }
 
@@ -150,127 +153,96 @@ router.post("/send", requireLeaderOrAdmin, async (req, res) => {
       return res.status(403).json({ message: "Only admins can send urgent priority notifications" });
     }
 
-    const audienceCount = await getSubscribedCount(target, targetValue);
-    if (audienceCount === 0 && target !== "segment") {
-      return res.status(400).json({
-        message: "No linked Google accounts found. Notification cannot be delivered.",
-        audienceCount: 0,
-        target,
-      });
+    console.log(`[NOTIFICATIONS] SEND REQUEST | sender=${req.user.id} role=${req.user.role} target="${target}" value="${targetValue}" title="${title.slice(0, 40)}"`);
+
+    // ── STEP 1: Resolve target members for inbox records ──
+    const { memberIds, error: resolveError } = await resolveTargetMembers(target, targetValue);
+    if (resolveError) {
+      console.error(`[NOTIFICATIONS] Member resolution failed: ${resolveError}`);
+      return res.status(400).json({ message: "Failed to resolve target audience", error: resolveError });
     }
 
-    const options = {
-      title, body, subtitle, image, largeIcon, deepLink,
-      priority: effectivePriority, ttl, buttons,
-      schedule, silent, category, importance, channel,
-    };
+    // ── STEP 2: Record notification_history ──
+    const historyId = await recordHistory({
+      title, body, target, targetValue,
+      sentBy: req.user.id, sentCount: memberIds.length,
+      importance: effectivePriority, channel, category,
+    });
+    console.log(`[NOTIFICATIONS] History recorded | id=${historyId} | audience=${memberIds.length} members`);
 
-    let result;
-
-    switch (target) {
-      case "user": {
-        if (!targetValue) return res.status(400).json({ message: "targetValue required for user target" });
-        const memberId = parseInt(targetValue);
-        if (isNaN(memberId)) return res.status(400).json({ message: "targetValue must be a valid member ID" });
-
-        const googleSub = await getGoogleIdForMember(memberId);
-        if (!googleSub) {
-          return res.status(400).json({
-            message: "Target user has no linked Google account — cannot send notification",
-            code: "NO_GOOGLE_LINKED",
-          });
-        }
-        result = await sendToUser(googleSub, options);
-        break;
-      }
-
-      case "multiple_users": {
-        if (!targetValue) return res.status(400).json({ message: "targetValue required for multiple_users target" });
-        const memberIds = targetValue.split(",").map((s) => s.trim()).filter(Boolean);
-        if (memberIds.length === 0) return res.status(400).json({ message: "No valid user IDs provided" });
-
-        const { supabase: db } = await import("../config/supabase.js");
-        const { data: members } = await db
-          .from("members")
-          .select("google_id")
-          .in("id", memberIds.map(Number))
-          .not("google_id", "is", null);
-        const googleSubs = (members || []).map((m) => m.google_id).filter(Boolean);
-
-        if (googleSubs.length === 0) {
-          return res.status(400).json({
-            message: "No target users have linked Google accounts",
-            code: "NO_GOOGLE_LINKED",
-          });
-        }
-        result = await sendToUsers(googleSubs, options);
-        break;
-      }
-
-      case "committee":
-        if (!targetValue) return res.status(400).json({ message: "targetValue required for committee target" });
-        result = await sendToCommittee(targetValue, options);
-        break;
-
-      case "role":
-        if (!targetValue) return res.status(400).json({ message: "targetValue (role) required" });
-        result = await sendToRole(targetValue, options);
-        break;
-
-      case "tag": {
-        if (!targetValue) return res.status(400).json({ message: "targetValue (key=value) required" });
-        const [tagKey, ...tagValParts] = targetValue.split("=");
-        const tagValue = tagValParts.join("=");
-        if (!tagKey || !tagValue) return res.status(400).json({ message: "targetValue must be key=value format" });
-        result = await sendToTag(tagKey.trim(), tagValue.trim(), options);
-        break;
-      }
-
-      case "external_id": {
-        if (!targetValue) return res.status(400).json({ message: "targetValue (external IDs) required" });
-        const extIds = targetValue.split(",").map((s) => s.trim()).filter(Boolean);
-        if (extIds.length === 0) return res.status(400).json({ message: "No valid external IDs provided" });
-        result = extIds.length === 1
-          ? await sendToUser(extIds[0], options)
-          : await sendToExternalIds(extIds, options);
-        break;
-      }
-
-      case "segment":
-        if (!targetValue) return res.status(400).json({ message: "targetValue (segment name) required" });
-        result = await sendToSegment(targetValue, options);
-        break;
-
-      case "all":
-      default:
-        result = await sendToAll(options, req.user.id);
-        break;
-    }
-
-    if (result.sent > 0 && target !== "segment") {
-      await buildUserNotificationRecords({
+    // ── STEP 3: Create inbox records for ALL targeted members (ALWAYS, never skipped) ──
+    let inboxCount = 0;
+    if (memberIds.length > 0) {
+      const inboxResult = await createInboxRecords(memberIds, {
         title, body, category, deepLink, image,
-        target, targetValue, sentBy: req.user.id,
-        notificationHistoryId: result.historyId || null,
+        notificationHistoryId: historyId,
       });
+      inboxCount = inboxResult.created;
+      if (inboxResult.error) {
+        console.error(`[NOTIFICATIONS] Inbox creation partial failure: ${inboxResult.error} (${inboxCount}/${memberIds.length} created)`);
+      } else {
+        console.log(`[NOTIFICATIONS] Inbox records created | count=${inboxCount}`);
+      }
+    } else {
+      console.log(`[NOTIFICATIONS] No members to create inbox records for`);
     }
+
+    // ── STEP 4: Attempt remote push delivery (separate, never blocks inbox) ──
+    let pushResult = { sent: 0, error: null, onesignalId: null };
+    try {
+      const options = {
+        title, body, subtitle, image, largeIcon, deepLink,
+        priority: effectivePriority, ttl, buttons,
+        schedule, silent, category, importance, channel,
+      };
+      pushResult = await sendPushViaOneSignal(target, targetValue, options);
+    } catch (pushErr) {
+      console.error(`[NOTIFICATIONS] Push delivery exception: ${pushErr.message}`);
+      pushResult = { sent: 0, error: pushErr.message, onesignalId: null };
+    }
+
+    // ── STEP 5: Update history with push stats ──
+    if (historyId && pushResult.onesignalId) {
+      try {
+        await supabase
+          .from("notification_history")
+          .update({
+            sent_count: pushResult.sent,
+            delivered_count: pushResult.sent,
+            onesignal_id: pushResult.onesignalId,
+            error: pushResult.error || null,
+            status: pushResult.error ? "partial" : "sent",
+          })
+          .eq("id", historyId);
+      } catch (updateErr) {
+        console.error(`[NOTIFICATIONS] History update error: ${updateErr.message}`);
+      }
+    }
+
+    console.log(`[NOTIFICATIONS] SEND COMPLETE | inbox=${inboxCount} push=${pushResult.sent} pushError=${pushResult.error || "none"}`);
+
+    // ── STEP 6: Return combined stats ──
+    const responseMessage = pushResult.error
+      ? (inboxCount > 0 ? `Notification saved to ${inboxCount} inbox(es). Push delivery had issues.` : "Notification saved. Push delivery had issues.")
+      : (pushResult.sent > 0 ? `Notification sent to ${pushResult.sent} device(s)` : "Notification saved to inbox");
 
     res.json({
-      message: result.error ? "Notification sent with issues" : "Notification sent",
-      sent: result.sent,
-      errors: result.failed || 0,
-      error: result.error || null,
-      onesignalId: result.onesignalId || null,
-      audienceCount,
+      message: responseMessage,
+      inboxRecords: inboxCount,
+      sent: pushResult.sent,
+      errors: pushResult.error ? 1 : 0,
+      error: pushResult.error || null,
+      onesignalId: pushResult.onesignalId || null,
+      audienceCount: memberIds.length,
     });
   } catch (err) {
-    console.error("[ONESIGNAL] Send error:", err.message);
-    console.error("[ONESIGNAL] Send error stack:", err.stack);
+    console.error(`[NOTIFICATIONS] Send error: ${err.message}`);
+    console.error(`[NOTIFICATIONS] Send error stack: ${err.stack}`);
     const isDev = process.env.NODE_ENV !== "production";
     res.status(500).json({
       message: "Failed to send notification",
       error: err.message,
-      ...(isDev && { stack: err.stack, source: "notifications.js:/send" }),
+      ...(isDev && { stack: err.stack }),
     });
   }
 });
