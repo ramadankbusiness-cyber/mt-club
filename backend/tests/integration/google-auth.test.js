@@ -8,6 +8,10 @@ const JWT_SECRET = "MTCLUB_SECRET";
 vi.stubEnv("GOOGLE_CLIENT_ID", "279707701038-vkcsuruav5ri7jke9c5rqlanri2ohdof.apps.googleusercontent.com");
 vi.stubEnv("JWT_SECRET", JWT_SECRET);
 
+vi.mock("express-rate-limit", () => ({
+  default: () => (req, res, next) => next(),
+}));
+
 const FAKE_JWT = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.eyJmYWtlIjoic2lnbmF0dXJlIn0";
 
 vi.mock("../../config/supabase.js", () => ({
@@ -221,6 +225,211 @@ describe("Google Auth Routes", () => {
         .send({ credential: FAKE_JWT });
       expect(res.status).toBe(409);
       expect(res.body.code).toBe("ALREADY_LINKED_DIFFERENT");
+    });
+  });
+
+  describe("POST /api/auth/google/login", () => {
+    function googlePayload(overrides = {}) {
+      return {
+        sub: "google-login-123",
+        email: "member@gmail.com",
+        name: "Member One",
+        picture: "https://lh3.googleusercontent.com/photo.jpg",
+        email_verified: true,
+        ...overrides,
+      };
+    }
+
+    function memberRow(overrides = {}) {
+      return {
+        id: 1,
+        name: "Member One",
+        email: "member@gmail.com",
+        role: "member",
+        enabled: 1,
+        password: "hashed",
+        profile_image: "",
+        committee: null,
+        google_id: null,
+        google_verified: false,
+        ...overrides,
+      };
+    }
+
+    it("rejects missing credential", async () => {
+      const res = await request(app)
+        .post("/api/auth/google/login")
+        .send({});
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a failed token verification", async () => {
+      mockVerifyIdToken.mockRejectedValue(new Error("GOOGLE_VERIFY_FAIL: Token expired"));
+
+      const res = await request(app)
+        .post("/api/auth/google/login")
+        .send({ credential: FAKE_JWT });
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe("VERIFICATION_FAILED");
+    });
+
+    it("rejects when no member matches the Google email or linked Google account", async () => {
+      mockVerifyIdToken.mockResolvedValue(googlePayload());
+
+      let callCount = 0;
+      supabase.from.mockImplementation((table) => {
+        callCount++;
+        if (table === "members") {
+          // 1st: email lookup misses
+          if (callCount === 1) return mockQuery([]);
+          // 2nd: google_id fallback also misses
+          return mockQuery(null, null);
+        }
+        return mockQuery();
+      });
+
+      const res = await request(app)
+        .post("/api/auth/google/login")
+        .send({ credential: FAKE_JWT });
+      expect(res.status).toBe(401);
+      expect(res.body.message).toMatch(/no account found/i);
+    });
+
+    it("logs in an already-linked member whose Google email differs from their member email", async () => {
+      mockVerifyIdToken.mockResolvedValue(googlePayload({ sub: "google-login-123", email: "personal@gmail.com" }));
+
+      let callCount = 0;
+      supabase.from.mockImplementation((table) => {
+        callCount++;
+        if (table === "members") {
+          // 1st: email lookup misses (member email is on the club domain)
+          if (callCount === 1) return mockQuery([]);
+          // 2nd: google_id fallback finds the linked member
+          if (callCount === 2) {
+            return mockQuery(memberRow({ email: "member@mtclub.com", google_id: "google-login-123", google_verified: true }));
+          }
+          return mockQuery(null, null);
+        }
+        return mockQuery();
+      });
+
+      const res = await request(app)
+        .post("/api/auth/google/login")
+        .send({ credential: FAKE_JWT });
+      expect(res.status).toBe(200);
+      expect(res.body.token).toBeDefined();
+      expect(res.body.googleSub).toBe("google-login-123");
+      expect(res.body.googleVerified).toBe(true);
+      expect(res.body.email).toBe("member@mtclub.com");
+      expect(res.body.id).toBe(1);
+
+      const decoded = jwt.verify(res.body.token, JWT_SECRET);
+      expect(decoded.id).toBe(1);
+      expect(decoded.role).toBe("member");
+    });
+
+    it("rejects a disabled member", async () => {
+      mockVerifyIdToken.mockResolvedValue(googlePayload());
+      supabase.from.mockReturnValue(mockQuery([memberRow({ enabled: 0 })]));
+
+      const res = await request(app)
+        .post("/api/auth/google/login")
+        .send({ credential: FAKE_JWT });
+      expect(res.status).toBe(401);
+      expect(res.body.message).toMatch(/disabled/i);
+    });
+
+    it("rejects if Google account is already linked to another member", async () => {
+      mockVerifyIdToken.mockResolvedValue(googlePayload());
+
+      let callCount = 0;
+      supabase.from.mockImplementation((table) => {
+        callCount++;
+        if (table === "members") {
+          // 1st: email lookup finds this member
+          if (callCount === 1) return mockQuery([memberRow()]);
+          // 2nd: google_id lookup finds ANOTHER member
+          return mockQuery({ id: 2, email: "other@test.com" });
+        }
+        return mockQuery();
+      });
+
+      const res = await request(app)
+        .post("/api/auth/google/login")
+        .send({ credential: FAKE_JWT });
+      expect(res.status).toBe(409);
+      expect(res.body.message).toMatch(/already linked to another member/i);
+    });
+
+    it("rejects if the member is linked to a different Google account", async () => {
+      mockVerifyIdToken.mockResolvedValue(googlePayload());
+
+      let callCount = 0;
+      supabase.from.mockImplementation((table) => {
+        callCount++;
+        if (table === "members") {
+          if (callCount === 1) return mockQuery([memberRow({ google_id: "google-old-different" })]);
+          return mockQuery(null, null);
+        }
+        return mockQuery();
+      });
+
+      const res = await request(app)
+        .post("/api/auth/google/login")
+        .send({ credential: FAKE_JWT });
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe("ALREADY_LINKED_DIFFERENT");
+    });
+
+    it("auto-links and logs in a member who never linked a Google account", async () => {
+      mockVerifyIdToken.mockResolvedValue(googlePayload());
+
+      let callCount = 0;
+      supabase.from.mockImplementation((table) => {
+        callCount++;
+        if (table === "members") {
+          if (callCount === 1) return mockQuery([memberRow()]);
+          if (callCount === 2) return mockQuery(null, null);
+          return mockQuery(null, null);
+        }
+        return mockQuery();
+      });
+
+      const res = await request(app)
+        .post("/api/auth/google/login")
+        .send({ credential: FAKE_JWT });
+      expect(res.status).toBe(200);
+      expect(res.body.token).toBeDefined();
+      expect(res.body.googleSub).toBe("google-login-123");
+      expect(res.body.googleVerified).toBe(true);
+      expect(res.body.id).toBe(1);
+      expect(res.body.email).toBe("member@gmail.com");
+
+      const decoded = jwt.verify(res.body.token, JWT_SECRET);
+      expect(decoded.id).toBe(1);
+      expect(decoded.role).toBe("member");
+    });
+
+    it("logs in a member whose Google account is already linked", async () => {
+      mockVerifyIdToken.mockResolvedValue(googlePayload());
+
+      let callCount = 0;
+      supabase.from.mockImplementation((table) => {
+        callCount++;
+        if (table === "members") {
+          if (callCount === 1) return mockQuery([memberRow({ google_id: "google-login-123", google_verified: true })]);
+          return mockQuery(null, null);
+        }
+        return mockQuery();
+      });
+
+      const res = await request(app)
+        .post("/api/auth/google/login")
+        .send({ credential: FAKE_JWT });
+      expect(res.status).toBe(200);
+      expect(res.body.token).toBeDefined();
+      expect(res.body.googleSub).toBe("google-login-123");
+      expect(res.body.googleVerified).toBe(true);
     });
   });
 

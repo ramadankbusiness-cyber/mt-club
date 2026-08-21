@@ -42,6 +42,38 @@ const googleLinkLimiter = rateLimit({
   message: { message: "Too many Google link attempts. Please try again later." },
 });
 
+// Builds the exact same authentication response as the password /login endpoint.
+// Shared by /login and /google/login so both flows issue identical JWTs and payloads.
+async function sendAuthResponse(res, user) {
+  const token = jwt.sign(
+    { id: user.id, role: user.role, committee: user.committee || null },
+    JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+
+  let points = 0;
+  let attendanceCount = 0;
+  try {
+    const pointsData = await calculateUserPoints(user.id);
+    points = pointsData.total;
+    attendanceCount = pointsData.attendanceCount;
+  } catch {}
+
+  res.json({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    committee: user.committee || null,
+    profile_image: user.profile_image || "",
+    points,
+    attendanceCount,
+    token,
+    googleSub: user.google_id || null,
+    googleVerified: user.google_verified || false,
+  });
+}
+
 function logGoogleConfig() {
   const clientId = process.env.GOOGLE_CLIENT_ID || "";
   return clientId;
@@ -167,29 +199,8 @@ router.post("/login", loginLimiter, async (req, res) => {
       console.warn("[LOGIN] 401 — wrong password for user:", user.id, "| email:", email);
       return res.status(401).json({ message: "Invalid credentials" });
     }
-    const token = jwt.sign({ id: user.id, role: user.role, committee: user.committee || null }, JWT_SECRET, { expiresIn: "7d" });
     console.log("[LOGIN] 200 — success for user:", user.id, "| email:", email);
-    let points = 0;
-    let attendanceCount = 0;
-    try {
-      const pointsData = await calculateUserPoints(user.id);
-      points = pointsData.total;
-      attendanceCount = pointsData.attendanceCount;
-    } catch {}
-
-    res.json({
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      committee: user.committee || null,
-      profile_image: user.profile_image || "",
-      points,
-      attendanceCount,
-      token,
-      googleSub: user.google_id || null,
-      googleVerified: user.google_verified || false,
-    });
+    await sendAuthResponse(res, user);
   } catch (err) {
     console.error("[LOGIN] 500 — unexpected error:", err.message, err.stack);
     res.status(500).json({ message: "Login failed" });
@@ -288,6 +299,18 @@ router.put("/change-password", auth, async (req, res) => {
 
 // ─── Google Account Linking (Mandatory) ─────────────────────────
 
+// Standard error response for any Google token verification failure.
+// Shared by /google/link and /google/login.
+function handleGoogleVerifyError(res, err) {
+  const isVerifyFail = err.message?.startsWith("GOOGLE_VERIFY_FAIL:");
+  const detail = isVerifyFail ? err.message : "GOOGLE_VERIFY_FAIL: Internal error";
+  res.status(401).json({
+    message: "Google verification failed",
+    detail,
+    code: isVerifyFail ? "VERIFICATION_FAILED" : "INTERNAL_ERROR",
+  });
+}
+
 router.post("/google/link", auth, googleLinkLimiter, async (req, res) => {
   const { credential } = req.body;
   if (!credential) return res.status(400).json({ message: "Google credential required" });
@@ -367,13 +390,140 @@ router.post("/google/link", auth, googleLinkLimiter, async (req, res) => {
       googleVerified: !!email_verified,
     });
   } catch (err) {
-    const isVerifyFail = err.message?.startsWith("GOOGLE_VERIFY_FAIL:");
-    const detail = isVerifyFail ? err.message : "GOOGLE_VERIFY_FAIL: Internal error";
-    res.status(401).json({
-      message: "Google verification failed",
-      detail,
-      code: isVerifyFail ? "VERIFICATION_FAILED" : "INTERNAL_ERROR",
-    });
+    handleGoogleVerifyError(res, err);
+  }
+});
+
+// ─── Google Sign-In (Login) ─────────────────────────────────────
+
+// Public login with a Google ID token. Finds the existing member by email,
+// auto-links the Google account on first sign-in, and returns the exact same
+// authentication response as the password /login endpoint.
+router.post("/google/login", loginLimiter, async (req, res) => {
+  const { credential } = req.body;
+  if (!credential) return res.status(400).json({ message: "Google credential required" });
+
+  try {
+    const payload = await verifyGoogleToken(credential);
+    if (!payload || !payload.sub) {
+      return res.status(401).json({ message: "Invalid Google credential" });
+    }
+
+    const {
+      sub: googleSub,
+      email: googleEmail,
+      name: googleName,
+      picture: googlePicture,
+      email_verified,
+    } = payload;
+    const normalizedEmail = (googleEmail || "").trim().toLowerCase().slice(0, 255);
+    if (!normalizedEmail) {
+      return res.status(401).json({ message: "Invalid Google credential" });
+    }
+
+    const { data: members, error } = await supabase
+      .from("members")
+      .select("*")
+      .ilike("email", normalizedEmail)
+      .limit(1);
+    if (error) {
+      console.error("[GOOGLE] Login DB error:", error.message);
+      return res.status(500).json({ message: "Login failed" });
+    }
+
+    let member = members?.[0];
+
+    // Fallback: allow an already-linked member whose Google email differs from their
+    // member email to sign in via their linked Google sub (google_id).
+    if (!member) {
+      const { data: linkedBySub, error: subError } = await supabase
+        .from("members")
+        .select("*")
+        .eq("google_id", googleSub)
+        .maybeSingle();
+      if (subError) {
+        console.error("[GOOGLE] Login DB error:", subError.message);
+        return res.status(500).json({ message: "Login failed" });
+      }
+      member = linkedBySub;
+    }
+
+    if (!member) {
+      console.warn(`[GOOGLE] 401 — no member found for email: ${normalizedEmail}`);
+      return res.status(401).json({ message: "No account found for this Google account" });
+    }
+
+    if (member.enabled === 0 || member.enabled === false) {
+      console.warn("[GOOGLE] 401 — account disabled for member:", member.id);
+      return res.status(401).json({ message: "Account disabled" });
+    }
+
+    // Reject if this Google account is already linked to ANOTHER member
+    const { data: existingGoogle } = await supabase
+      .from("members")
+      .select("id, email")
+      .eq("google_id", googleSub)
+      .neq("id", member.id)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingGoogle) {
+      return res.status(409).json({
+        message: "This Google account is already linked to another member",
+        existingEmail: existingGoogle.email,
+      });
+    }
+
+    if (member.google_id && member.google_id !== googleSub) {
+      return res.status(409).json({
+        message: "This account is already linked to a different Google account",
+        code: "ALREADY_LINKED_DIFFERENT",
+      });
+    }
+
+    const now = new Date().toISOString();
+
+    if (!member.google_id) {
+      // First Google sign-in — auto-link using the existing member record
+      const { error: linkError } = await supabase
+        .from("members")
+        .update({
+          google_id: googleSub,
+          google_email: normalizedEmail,
+          google_name: googleName,
+          google_picture: googlePicture,
+          google_verified: !!email_verified,
+          google_linked: true,
+          google_linked_at: now,
+          google_last_login: now,
+        })
+        .eq("id", member.id);
+
+      if (linkError) {
+        console.error("[GOOGLE] Auto-link error:", linkError.message);
+        return res.status(500).json({ message: "Login failed" });
+      }
+
+      member.google_id = googleSub;
+      member.google_email = normalizedEmail;
+      member.google_name = googleName;
+      member.google_picture = googlePicture;
+      member.google_verified = !!email_verified;
+      member.google_linked = true;
+      member.google_linked_at = now;
+      member.google_last_login = now;
+
+      console.log(`[GOOGLE] Member ${member.id} auto-linked Google account and signed in`);
+    } else {
+      // Already linked — just record the login
+      await supabase.from("members").update({ google_last_login: now }).eq("id", member.id);
+      console.log(`[GOOGLE] Member ${member.id} signed in with Google`);
+    }
+
+    await sendAuthResponse(res, member);
+  } catch (err) {
+    console.error("[GOOGLE] Login error:", err.message);
+    handleGoogleVerifyError(res, err);
   }
 });
 

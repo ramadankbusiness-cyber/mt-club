@@ -57,12 +57,16 @@ vi.mock("../../utils/onesignal.js", () => ({
   recordHistory: vi.fn().mockResolvedValue(99),
   getGoogleIdForMember: vi.fn().mockResolvedValue("google-sub-test-123"),
   resolveGoogleIds: vi.fn().mockResolvedValue([]),
+  resolveTargetMembers: vi.fn().mockResolvedValue({ memberIds: [1, 2, 3], error: null }),
+  createInboxRecords: vi.fn().mockResolvedValue({ created: 3, error: null }),
+  sendPushViaOneSignal: vi.fn().mockResolvedValue({ sent: 5, error: null, onesignalId: "os_push" }),
 }));
 
 import notificationRoutes from "../../routes/notifications.js";
 import {
   sendToAll, sendToUser, getSubscribedCount, buildUserNotificationRecords,
   getGoogleIdForMember,
+  resolveTargetMembers, createInboxRecords, sendPushViaOneSignal,
 } from "../../utils/onesignal.js";
 import { supabase } from "../../config/supabase.js";
 
@@ -104,8 +108,7 @@ describe("Notification Routes", () => {
 
   describe("POST /api/notifications/send — Urgent Permission", () => {
     it("allows admin to send urgent notifications", async () => {
-      getSubscribedCount.mockResolvedValueOnce(5);
-      sendToAll.mockResolvedValueOnce({ sent: 5, failed: 0, error: null, onesignalId: "os_admin", historyId: 10 });
+      sendPushViaOneSignal.mockResolvedValueOnce({ sent: 5, error: null, onesignalId: "os_admin" });
 
       const res = await request(app)
         .post("/api/notifications/send")
@@ -136,8 +139,7 @@ describe("Notification Routes", () => {
     });
 
     it("allows leader to send regular notifications", async () => {
-      getSubscribedCount.mockResolvedValueOnce(5);
-      sendToAll.mockResolvedValueOnce({ sent: 5, failed: 0, error: null, onesignalId: "os_lead", historyId: 11 });
+      sendPushViaOneSignal.mockResolvedValueOnce({ sent: 5, error: null, onesignalId: "os_lead" });
 
       const res = await request(app)
         .post("/api/notifications/send")
@@ -172,68 +174,77 @@ describe("Notification Routes", () => {
       expect(res.body.message).toMatch(/body/i);
     });
 
-    it("rejects send when audience is zero", async () => {
-      getSubscribedCount.mockResolvedValueOnce(0);
+    it("returns success with zero inbox records when audience is empty", async () => {
+      resolveTargetMembers.mockResolvedValueOnce({ memberIds: [], error: null });
 
       const res = await request(app)
         .post("/api/notifications/send")
         .set("Authorization", `Bearer ${adminToken}`)
         .send({ title: "Test", body: "Hello", target: "all" });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
       expect(res.body.audienceCount).toBe(0);
+      expect(res.body.inboxRecords).toBe(0);
+      expect(createInboxRecords).not.toHaveBeenCalled();
     });
 
-    it("rejects user target without targetValue", async () => {
-      getSubscribedCount.mockResolvedValueOnce(5);
+    it("surfaces push validation errors without failing the request (user target)", async () => {
+      resolveTargetMembers.mockResolvedValueOnce({ memberIds: [], error: null });
+      sendPushViaOneSignal.mockResolvedValueOnce({ sent: 0, error: "targetValue required", onesignalId: null });
 
       const res = await request(app)
         .post("/api/notifications/send")
         .set("Authorization", `Bearer ${adminToken}`)
         .send({ title: "Test", body: "Hello", target: "user" });
 
-      expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/targetValue/i);
+      expect(res.status).toBe(200);
+      expect(res.body.sent).toBe(0);
+      expect(res.body.errors).toBe(1);
+      expect(res.body.error).toMatch(/targetValue/i);
     });
 
-    it("rejects tag target with invalid format", async () => {
-      getSubscribedCount.mockResolvedValueOnce(1);
+    it("surfaces push validation errors without failing the request (tag target)", async () => {
+      sendPushViaOneSignal.mockResolvedValueOnce({ sent: 0, error: "targetValue must be key=value format", onesignalId: null });
 
       const res = await request(app)
         .post("/api/notifications/send")
         .set("Authorization", `Bearer ${adminToken}`)
         .send({ title: "Test", body: "Hello", target: "tag", targetValue: "noequals" });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
+      expect(res.body.error).toMatch(/key=value/i);
     });
   });
 
-  // ─── TASK 3: EMPTY AUDIENCE VALIDATION ───────────────────
+  // ─── EMPTY AUDIENCE RESOLUTION (inbox-first architecture) ──
 
   describe("POST /api/notifications/send — Empty Audience", () => {
-    it("returns 400 with audienceCount=0 for empty all target", async () => {
-      getSubscribedCount.mockResolvedValueOnce(0);
+    it("still returns 200 with empty inbox when no members resolve", async () => {
+      resolveTargetMembers.mockResolvedValueOnce({ memberIds: [], error: null });
 
       const res = await request(app)
         .post("/api/notifications/send")
         .set("Authorization", `Bearer ${adminToken}`)
         .send({ title: "Hi", body: "World", target: "all" });
 
-      expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/No linked Google accounts|No subscribed/i);
+      expect(res.status).toBe(200);
+      expect(res.body.inboxRecords).toBe(0);
       expect(res.body.audienceCount).toBe(0);
+      expect(createInboxRecords).not.toHaveBeenCalled();
     });
 
-    it("skips audience check for segment target", async () => {
-      getSubscribedCount.mockResolvedValueOnce(0);
-      sendToAll.mockResolvedValueOnce({ sent: 10, failed: 0, error: null, onesignalId: "os_seg", historyId: 12 });
+    it("keeps push delivery decoupled from empty inbox resolution", async () => {
+      resolveTargetMembers.mockResolvedValueOnce({ memberIds: [], error: null });
+      sendPushViaOneSignal.mockResolvedValueOnce({ sent: 10, error: null, onesignalId: "os_seg" });
 
       const res = await request(app)
         .post("/api/notifications/send")
         .set("Authorization", `Bearer ${adminToken}`)
         .send({ title: "Hi", body: "World", target: "all" });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
+      expect(res.body.sent).toBe(10);
+      expect(sendPushViaOneSignal).toHaveBeenCalled();
     });
   });
 
@@ -241,8 +252,9 @@ describe("Notification Routes", () => {
 
   describe("POST /api/notifications/send — Target Types", () => {
     it("sends to all users", async () => {
-      getSubscribedCount.mockResolvedValueOnce(10);
-      sendToAll.mockResolvedValueOnce({ sent: 10, failed: 0, error: null, onesignalId: "os_all", historyId: 20 });
+      resolveTargetMembers.mockResolvedValueOnce({ memberIds: [1, 2, 3, 4, 5], error: null });
+      createInboxRecords.mockResolvedValueOnce({ created: 5, error: null });
+      sendPushViaOneSignal.mockResolvedValueOnce({ sent: 10, error: null, onesignalId: "os_all" });
 
       const res = await request(app)
         .post("/api/notifications/send")
@@ -251,12 +263,14 @@ describe("Notification Routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.sent).toBe(10);
-      expect(sendToAll).toHaveBeenCalled();
+      expect(res.body.inboxRecords).toBe(5);
+      expect(sendPushViaOneSignal).toHaveBeenCalledWith("all", undefined, expect.objectContaining({ title: "All" }));
     });
 
     it("sends to a specific user", async () => {
-      getSubscribedCount.mockResolvedValueOnce(1);
-      sendToUser.mockResolvedValueOnce({ sent: 1, failed: 0, error: null, onesignalId: "os_one", historyId: 21 });
+      resolveTargetMembers.mockResolvedValueOnce({ memberIds: [5], error: null });
+      createInboxRecords.mockResolvedValueOnce({ created: 1, error: null });
+      sendPushViaOneSignal.mockResolvedValueOnce({ sent: 1, error: null, onesignalId: "os_one" });
 
       const res = await request(app)
         .post("/api/notifications/send")
@@ -265,23 +279,29 @@ describe("Notification Routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.sent).toBe(1);
+      expect(res.body.onesignalId).toBe("os_one");
     });
 
-    it("builds user notification records after successful send", async () => {
-      getSubscribedCount.mockResolvedValueOnce(5);
-      sendToAll.mockResolvedValueOnce({ sent: 5, failed: 0, error: null, onesignalId: "os_inbox", historyId: 25 });
+    it("creates inbox records before push delivery, for every targeted member", async () => {
+      resolveTargetMembers.mockResolvedValueOnce({ memberIds: [7, 8], error: null });
+      sendPushViaOneSignal.mockResolvedValueOnce({ sent: 5, error: null, onesignalId: "os_inbox" });
 
       await request(app)
         .post("/api/notifications/send")
         .set("Authorization", `Bearer ${adminToken}`)
         .send({ title: "Inbox", body: "Check inbox", target: "all", category: "event" });
 
-      expect(buildUserNotificationRecords).toHaveBeenCalledWith(
+      expect(resolveTargetMembers).toHaveBeenCalledWith("all", undefined);
+      expect(createInboxRecords).toHaveBeenCalledWith(
+        [7, 8],
         expect.objectContaining({
           title: "Inbox",
           body: "Check inbox",
           category: "event",
         })
+      );
+      expect(createInboxRecords.mock.invocationCallOrder[0]).toBeLessThan(
+        sendPushViaOneSignal.mock.invocationCallOrder[0]
       );
     });
   });

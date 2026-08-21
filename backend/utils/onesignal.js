@@ -728,4 +728,4 @@ export async function sendToExternalIds(externalIds, options) {
   }
 }
 
-export { getConfig, buildPayload, sendNotification, recordHistory, resolveGoogleIds, getGoogleIdForMember, resolveTargetMembers, createInboxRecords, sendPushViaOneSignal };
+export { getConfig, buildPayload, sendNotification, recordHistory, resolveGoogleIds, getGoogleIdForMember };
